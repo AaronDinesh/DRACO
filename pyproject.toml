@@ -1,13 +1,15 @@
 [project]
-name = "semester-project-1"
+name = "DRACO"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "flax>=0.11.2",
     "jax>=0.7.2",
     "matplotlib>=3.10.6",
     "numpy>=2.3.3",
+    "optax>=0.2.6",
     "pyqt5>=5.15.11",
     "tqdm>=4.67.1",
 ]
