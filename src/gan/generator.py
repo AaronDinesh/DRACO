@@ -1,15 +1,15 @@
-from typing import List, Tuple
-
+import jax
 import jax.numpy as jnp
 import jax.random as random
 from flax import nnx
+from jax.typing import ArrayLike
 
 
 class FiLM(nnx.Module):
-    def __init__(self, theta_dim: int, out_features: int, key: random.key):
-        self.gamma_key, self.beta_key = random.split(key)
-        self.gamma = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(self.gamma_key))
-        self.beta = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(self.beta_key))
+    def __init__(self, theta_dim: int, out_features: int, key: ArrayLike):
+        self.gamma_key, self.beta_key = random.split(key)  # type: ignore
+        self.gamma: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(self.gamma_key))  # type: ignore
+        self.beta: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(self.beta_key))  # type: ignore
 
     def __call__(self, input: jnp.ndarray, condition_param: jnp.ndarray) -> jnp.ndarray:
         # This is because my tensor is of shape (B, H, W, C)
@@ -21,14 +21,14 @@ class FiLM(nnx.Module):
 class downsample(nnx.Module):
     def __init__(
         self,
-        key: random.key,
+        key: ArrayLike,
         in_features: int,
         out_features: int,
-        size: Tuple[int, int],
+        size: tuple[int, int],
         apply_BatchNorm: bool = True,
     ):
-        self.conv_key, self.batch_norm_key = random.split(key)
-        self.conv_block = nnx.Conv(
+        self.conv_key, self.batch_norm_key = random.split(key)  # type: ignore
+        self.conv_block: nnx.Conv = nnx.Conv(
             in_features=in_features,
             out_features=out_features,
             kernel_size=size,
@@ -37,10 +37,10 @@ class downsample(nnx.Module):
             use_bias=False,
             rngs=nnx.Rngs(self.conv_key),
         )
-        self.batch_norm = nnx.BatchNorm(
+        self.batch_norm: nnx.BatchNorm = nnx.BatchNorm(
             num_features=out_features, rngs=nnx.Rngs(self.batch_norm_key)
         )
-        self.apply_BatchNorm = apply_BatchNorm
+        self.apply_BatchNorm: bool = apply_BatchNorm
 
     def __call__(self, x: jnp.ndarray, is_training: bool):
         x = self.conv_block(x)
@@ -52,14 +52,14 @@ class downsample(nnx.Module):
 class upsample(nnx.Module):
     def __init__(
         self,
-        key: random.key,
+        key: ArrayLike,
         in_features: int,
         out_features: int,
-        size: Tuple[int, int],
+        size: tuple[int, int],
         apply_Dropout: bool = True,
     ):
-        self.conv_key, self.batch_norm_key, self.dropout_key = random.split(key, 3)
-        self.conv_block = nnx.ConvTranspose(
+        self.conv_key, self.batch_norm_key, self.dropout_key = random.split(key, 3)  # type: ignore
+        self.conv_block: nnx.ConvTranspose = nnx.ConvTranspose(
             in_features=in_features,
             out_features=out_features,
             kernel_size=size,
@@ -68,15 +68,15 @@ class upsample(nnx.Module):
             use_bias=False,
             rngs=nnx.Rngs(self.conv_key),
         )
-        self.batch_norm = nnx.BatchNorm(
+        self.batch_norm: nnx.BatchNorm = nnx.BatchNorm(
             num_features=out_features, rngs=nnx.Rngs(self.batch_norm_key)
         )
 
-        self.dropout = nnx.Dropout(rate=0.5, rngs=nnx.Rngs(self.dropout_key))
+        self.dropout: nnx.Dropout = nnx.Dropout(rate=0.5, rngs=nnx.Rngs(self.dropout_key))
 
-        self.apply_Dropout = apply_Dropout
+        self.apply_Dropout: bool = apply_Dropout
 
-    def __call__(self, x: jnp.ndarray, is_training: bool = False):
+    def __call__(self, x: jnp.ndarray, is_training: bool = False) -> jnp.ndarray:
         x = self.conv_block(x)
         x = self.batch_norm(x, use_running_average=not is_training)
         if self.apply_Dropout and is_training:
@@ -85,8 +85,10 @@ class upsample(nnx.Module):
 
 
 class Generator(nnx.Module):
-    def __init__(self, key: Array, in_features: int, out_features: int, len_condition_params: int):
-        keys = random.split(key, 25)
+    def __init__(
+        self, key: ArrayLike, in_features: int, out_features: int, len_condition_params: int
+    ):
+        keys: jax.Array = random.split(key, 25)
 
         # fmt: off
         self.downsample_blocks: list[downsample] = [
@@ -100,7 +102,7 @@ class Generator(nnx.Module):
             downsample(keys[7], in_features=512, out_features=512, size=(4, 4)),
         ]
 
-        self.upsample_blocks: List[upsample] = [
+        self.upsample_blocks: list[upsample] = [
             upsample(keys[8], in_features=512, out_features=512, size=(4, 4)),
             upsample(keys[9], in_features=1024, out_features=512, size=(4, 4)),
             upsample(keys[10], in_features=1024, out_features=512, size=(4, 4)),
@@ -122,7 +124,7 @@ class Generator(nnx.Module):
             FiLM(theta_dim=len_condition_params, out_features=512, key=keys[23]),
         ]
 
-        self.output_stage = nnx.ConvTranspose(
+        self.output_stage: nnx.ConvTranspose = nnx.ConvTranspose(
             in_features=4,
             out_features=out_features,
             kernel_size=(4, 4),

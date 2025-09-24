@@ -1,23 +1,22 @@
-from typing import Tuple
-
 import jax.numpy as jnp
 import jax.random as random
 from flax import nnx
+from jax.typing import ArrayLike
 
 
 class conv_block(nnx.Module):
     def __init__(
         self,
-        key: random.key,
+        key: ArrayLike,
         in_features: int,
         out_features: int,
-        size: Tuple[int, int] = (3, 3),
+        size: tuple[int, int] = (3, 3),
         stride: int = 1,
         apply_BatchNorm: bool = True,
         activation: str = "leaky_relu",
     ):
-        k1, k2 = random.split(key)
-        self.conv = nnx.Conv(
+        k1, k2 = random.split(key)  # type: ignore
+        self.conv: nnx.Conv = nnx.Conv(
             in_features=in_features,
             out_features=out_features,
             kernel_size=size,
@@ -26,12 +25,14 @@ class conv_block(nnx.Module):
             use_bias=not apply_BatchNorm,
             rngs=nnx.Rngs(k1),
         )
-        self.apply_BatchNorm = apply_BatchNorm
+        self.apply_BatchNorm: bool = apply_BatchNorm
         if apply_BatchNorm:
-            self.batch_norm = nnx.BatchNorm(num_features=out_features, rngs=nnx.Rngs(k2))
-        self.activation = activation
+            self.batch_norm: nnx.BatchNorm = nnx.BatchNorm(
+                num_features=out_features, rngs=nnx.Rngs(k2)
+            )
+        self.activation: str = activation
 
-    def __call__(self, x):
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         x = self.conv(x)
         if self.apply_BatchNorm:
             x = self.batch_norm(x)
@@ -45,12 +46,12 @@ class conv_block(nnx.Module):
 class film(nnx.Module):
     """FiLM: condition_params -> γ, β; returns x * (1+γ) + β"""
 
-    def __init__(self, key: random.key, theta_dim: int, out_features: int):
-        k1, k2 = random.split(key)
-        self.gamma = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(k1))
-        self.beta = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(k2))
+    def __init__(self, key: ArrayLike, theta_dim: int, out_features: int):
+        k1, k2 = random.split(key)  # type: ignore
+        self.gamma: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(k1))
+        self.beta: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(k2))
 
-    def __call__(self, x, theta):
+    def __call__(self, x: jnp.ndarray, theta: jnp.ndarray):
         gamma = self.gamma(theta)[:, None, None, :]  # [B,1,1,C]
         beta = self.beta(theta)[:, None, None, :]  # [B,1,1,C]
         return x * (1.0 + gamma) + beta
@@ -59,10 +60,10 @@ class film(nnx.Module):
 class sle_block(nnx.Module):
     """Skip-Layer Excitation: low-res gates high-res (channel-wise)."""
 
-    def __init__(self, key: random.key, low_features: int, high_features: int, hidden: int = 128):
-        k1, k2 = random.split(key)
+    def __init__(self, key: ArrayLike, low_features: int, high_features: int, hidden: int = 128):
+        k1, k2 = random.split(key)  # type: ignore
         # Use global avg pool on low-res, then 1x1 convs to produce per-channel gate for high
-        self.fc1 = nnx.Conv(
+        self.conv_block1: nnx.Conv = nnx.Conv(
             in_features=low_features,
             out_features=hidden,
             kernel_size=(1, 1),
@@ -70,7 +71,7 @@ class sle_block(nnx.Module):
             padding="valid",
             rngs=nnx.Rngs(k1),
         )
-        self.fc2 = nnx.Conv(
+        self.conv_block2: nnx.Conv = nnx.Conv(
             in_features=hidden,
             out_features=high_features,
             kernel_size=(1, 1),
@@ -79,17 +80,17 @@ class sle_block(nnx.Module):
             rngs=nnx.Rngs(k2),
         )
 
-    def __call__(self, low, high):
+    def __call__(self, low: jnp.ndarray, high: jnp.ndarray) -> jnp.ndarray:
         # Global avg pool over H,W on 'low'
         g = jnp.mean(low, axis=(1, 2), keepdims=True)  # [B,1,1,Clow]
-        g = nnx.relu(self.fc1(g))  # [B,1,1,Hid]
-        g = self.fc2(g)  # [B,1,1,Chigh]
+        g = nnx.relu(self.conv_block1(g))  # [B,1,1,Hid]
+        g = self.conv_block2(g)  # [B,1,1,Chigh]
         return high * g  # broadcast over H,W
 
 
 class Discriminator(nnx.Module):
-    def __init__(self, key: random.key, in_features: int, len_condition_params: int):
-        keys = random.split(key, 40)
+    def __init__(self, key: ArrayLike, in_features: int, len_condition_params: int):
+        keys = random.split(key, 18)  # type: ignore
 
         # 256-branch
         self.d256 = conv_block(keys[0], in_features, 64, stride=2)  # 256 -> 128
@@ -131,7 +132,9 @@ class Discriminator(nnx.Module):
             rngs=nnx.Rngs(keys[17]),
         )
 
-    def __call__(self, x256, x128, condition_params: jnp.ndarray):
+    def __call__(
+        self, x256: jnp.ndarray, x128: jnp.ndarray, condition_params: jnp.ndarray
+    ) -> dict[str, jnp.ndarray]:
         # 256 branch
         h128 = self.d256(x256)  # [B,128,128,64]
         h128 = self.film128(h128, condition_params)
@@ -168,7 +171,7 @@ class Discriminator(nnx.Module):
         patch = self.patch_head(h8)  # [B,8,8,1]
 
         return {
-            "logits": logits,
+            "logits": nnx.sigmoid(logits),
             "patch": patch,
             "h128_gated": h128_gated,
             "h64_gated": h64_gated,
