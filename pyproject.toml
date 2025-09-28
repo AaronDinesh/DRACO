@@ -13,4 +13,5 @@ dependencies = [
     "optax>=0.2.6",
     "pyqt5>=5.15.11",
     "tqdm>=4.67.1",
+    "wandb>=0.22.0",
 ]

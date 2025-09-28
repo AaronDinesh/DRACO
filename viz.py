@@ -16,6 +16,7 @@ matplotlib.use("Qt5Agg")  # or 'Qt5Agg' if using PyQt5
 def main():
     data = np.load("data/Maps_B_IllustrisTNG_1P_z=0.00.npy")
     nframes = len(data)
+    print(f"nframes: {nframes}")
     filename = "visualization.mp4"
     fps = 5
     height, width = data.shape[1], data.shape[2]

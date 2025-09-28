@@ -154,4 +154,4 @@ class Generator(nnx.Module):
             x = jnp.concatenate([skip, x], axis=-1)  # concat along channels (NHWC)
 
         x = self.upsample_blocks[-1](x, is_training)
-        return nnx.tanh(self.output_stage(x))
+        return self.output_stage(x)
