@@ -5,6 +5,9 @@ build/
 dist/
 wheels/
 *.egg-info
+.ropeproject
+.zed/
+.env
 
 # Virtual environments
 .venv

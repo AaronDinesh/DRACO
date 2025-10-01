@@ -1,41 +1,20 @@
-from __future__ import annotations
-
-from collections.abc import Iterator
+import argparse
+import collections.abc
+import math
+import os
 
 import jax
 import jax.numpy as jnp
 import jax.random as random
 import optax
+import pandas as pd
+import wandb
+from dotenv import load_dotenv
 from flax import nnx
+from jax._src.typing import Array
 
 from src.gan import Discriminator, Generator
-
-# -------------------
-# 1. Hyperparameters
-# -------------------
-BATCH_SIZE = 8
-LEARNING_RATE = 2e-4
-BETA_1 = 0.5  # Recommended for Adam in GANs
-NUM_EPOCHS = 5
-TRAIN_STEPS_PER_EPOCH = 200
-EVAL_STEPS_PER_EPOCH = 50
-LOG_EVERY = 20
-
-# Field properties
-IMG_SIZE = 256
-IMG_CHANNELS = 1
-CONDITION_PARAMS_LEN = 10
-
-# Logging
-USE_WANDB = True
-WANDB_PROJECT = "astro-gan"
-WANDB_RUN_NAME = "nnx-cgan-256"
-WANDB_MODE = "online"  # "disabled" for no-upload environments
-
-
-# -------------------
-# 2. Utilities
-# -------------------
+from src.typing import Batch, Loader
 
 
 def avg_pool_2x(x: jnp.ndarray) -> jnp.ndarray:
@@ -46,60 +25,69 @@ def avg_pool_2x(x: jnp.ndarray) -> jnp.ndarray:
     return x_sum / 4.0
 
 
-def make_dummy_loaders(
-    key: jax.Array,
+def make_train_test_loaders(
+    key: Array,
     batch_size: int,
-    steps_per_epoch: int,
-    img_size: int,
-    channels: int,
-    cond_dim: int,
-) -> tuple[Iterator[dict[str, jnp.ndarray]], Iterator[dict[str, jnp.ndarray]]]:
-    """
-    Returns (train_loader, eval_loader) that yield dicts with:
-      - 'dm': input dark-matter map in [-1,1], shape [B,H,W,C]
-      - 'theta': conditioning vector, shape [B,cond_dim]
-      - 'target': target astro/baryon map in [-1,1], shape [B,H,W,C]
-    """
+    input_data_path: str,
+    output_data_path: str,
+    csv_path: str,
+    test_ratio: float = 0.2,
+) -> tuple[Loader, Loader, int, int, int, int]:
+    input_maps = jnp.load(input_data_path, mmap_mode="r")
+    output_maps = jnp.load(output_data_path, mmap_mode="r")
+    cosmos_params = jnp.asarray(pd.read_csv(csv_path, header=None).to_numpy())  # pyright: ignore[reportUnknownMemberType]
 
-    def make_epoch(seed: int, steps: int) -> Iterator[dict[str, jnp.ndarray]]:
-        k = random.PRNGKey(seed)
-        for _ in range(steps):
-            k, k_dm, k_t, k_theta = random.split(k, 4)
-            dm = random.uniform(
-                k_dm, (batch_size, img_size, img_size, channels), minval=-1.0, maxval=1.0
-            )
-            theta = random.normal(k_theta, (batch_size, cond_dim))
-            # dummy target: blurred version + noise to mimic structure
-            noise = 0.05 * random.normal(k_t, (batch_size, img_size, img_size, channels))
-            lp = avg_pool_2x(dm)
-            lp = jnp.repeat(jnp.repeat(lp, 2, axis=1), 2, axis=2)
-            target = jnp.clip(dm * 0.6 + lp * 0.4 + noise, -1.0, 1.0)
-            yield {"dm": dm, "theta": theta, "target": target}
+    assert len(input_maps) == len(cosmos_params), (
+        "The length of the input maps do not match the number of cosmos params entried"
+    )
+    assert len(input_maps) == len(output_maps), (
+        "The number of input maps does not match the number of output maps"
+    )
 
-    train_loader = make_epoch(seed=0, steps=steps_per_epoch)
-    eval_loader = make_epoch(seed=1, steps=EVAL_STEPS_PER_EPOCH)
-    return train_loader, eval_loader
+    dataset_len = len(input_maps)
 
+    n_test = max(1, int(round(test_ratio * dataset_len)))
 
-# -------------------
-# 3. Model and Optimizers
-# -------------------
+    random_shuffle = jax.random.permutation(key=key, x=dataset_len)
 
-master_key = random.key(0)
-gen_key, disc_key, data_key = random.split(master_key, 3)
+    test_idx = random_shuffle[:n_test]
+    train_idx = random_shuffle[n_test:]
 
-generator = Generator(
-    key=gen_key,
-    in_features=IMG_CHANNELS,
-    out_features=IMG_CHANNELS,
-    len_condition_params=CONDITION_PARAMS_LEN,
-)
-discriminator = Discriminator(
-    key=disc_key, in_features=IMG_CHANNELS, len_condition_params=CONDITION_PARAMS_LEN
-)
+    # This ensures that there is no data leakage
+    assert len(jnp.intersect1d(train_idx, test_idx)) == 0
 
-opt_gen = nnx.Optimizer(generator, optax.adam(LEARNING_RATE, b1=BETA_1), wrt=nnx.Param)
-opt_disc = nnx.Optimizer(discriminator, optax.adam(LEARNING_RATE, b1=BETA_1), wrt=nnx.Param)
+    def _run_epoch(
+        shuffled_idx: jnp.ndarray, key: Array | None, drop_last: bool = False
+    ) -> collections.abc.Generator[Batch]:
+        if key is not None:
+            shuffled_idx = jax.random.permutation(key=key, x=shuffled_idx)
+
+        n = len(shuffled_idx)
+        stop = (n // batch_size) * batch_size if drop_last else n
+
+        for s in range(0, stop, batch_size):
+            batch = shuffled_idx[s : s + batch_size]
+
+            yield {
+                "inputs": input_maps[batch],
+                "targets": output_maps[batch],
+                "params": cosmos_params[batch],
+            }
+
+    def train_loader(key: Array | None = None, drop_last: bool = False):
+        return _run_epoch(train_idx, key, drop_last)
+
+    def test_loader(key: Array | None = None, drop_last: bool = False):
+        return _run_epoch(test_idx, key, drop_last)
+
+    return (
+        train_loader,
+        test_loader,
+        len(train_idx),
+        len(test_idx),
+        input_maps[0].shape[1],
+        cosmos_params[0].shape[0],
+    )
 
 
 def bce_with_logits(logits: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
@@ -109,25 +97,25 @@ def bce_with_logits(logits: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
 
 @nnx.jit
 def d_step(
-    disc: Discriminator,
-    opt_disc: nnx.Optimizer,
-    gen: Generator,
+    disc,
+    opt_disc,
+    gen,
     batch: dict[str, jnp.ndarray],
 ) -> dict[str, jnp.ndarray]:
-    dm, theta, target = batch["dm"], batch["theta"], batch["target"]
+    inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
-    def loss_fn(disc: Discriminator) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+    def loss_fn(disc) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         # Real
-        real256 = target
+        real256 = targets
         real128 = avg_pool_2x(real256)
-        out_real = disc(real256, real128, theta, is_training=True)
+        out_real = disc(real256, real128, cosmos_params, is_training=True)
         logits_real = out_real["logits"]  # [B]
 
         # Fake (stopgrad on G)
-        fake256 = gen(dm, theta, is_training=True)
+        fake256 = gen(inputs, cosmos_params, is_training=True)
         fake256 = jax.lax.stop_gradient(fake256)
         fake128 = avg_pool_2x(fake256)
-        out_fake = disc(fake256, fake128, theta, is_training=True)
+        out_fake = disc(fake256, fake128, cosmos_params, is_training=True)
         logits_fake = out_fake["logits"]
 
         loss_real = bce_with_logits(logits_real, jnp.ones_like(logits_real))
@@ -156,22 +144,22 @@ def d_step(
 
 @nnx.jit
 def g_step(
-    gen: Generator,
-    opt_gen: nnx.Optimizer,
-    disc: Discriminator,
+    gen,
+    opt_gen,
+    disc,
     batch: dict[str, jnp.ndarray],
     l1_lambda: float = 0.0,  # set >0 for pix2pix-like reconstruction
 ) -> dict[str, jnp.ndarray]:
-    dm, theta, target = batch["dm"], batch["theta"], batch["target"]
+    inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
-    def loss_fn(gen: Generator) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
-        fake256 = gen(dm, theta, is_training=True)
+    def loss_fn(gen) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+        fake256 = gen(inputs, cosmos_params, is_training=True)
         fake128 = avg_pool_2x(fake256)
-        out_fake = disc(fake256, fake128, theta, is_training=True)
+        out_fake = disc(fake256, fake128, cosmos_params, is_training=True)
         logits_fake = out_fake["logits"]
 
         adv = bce_with_logits(logits_fake, jnp.ones_like(logits_fake))
-        rec = jnp.mean(jnp.abs(fake256 - target))
+        rec = jnp.mean(jnp.abs(fake256 - targets))
         g_loss = adv + l1_lambda * rec
 
         # "accuracy" proxy for G: how often D predicts fake as real
@@ -192,40 +180,40 @@ def eval_step(
     batch: dict[str, jnp.ndarray],
     l1_lambda: float = 0.0,
 ) -> dict[str, jnp.ndarray]:
-    dm, theta, target = batch["dm"], batch["theta"], batch["target"]
+    inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
     # Real branch
-    real256 = target
+    real256 = targets
     real128 = avg_pool_2x(real256)
-    o_r = disc(real256, real128, theta, is_training=False)
-    lr = o_r["logits"]
+    disc_out_real = disc(real256, real128, cosmos_params, is_training=False)
+    logits_real = disc_out_real["logits"]
 
     # Fake branch
-    fake256 = gen(dm, theta, is_training=False)
+    fake256 = gen(inputs, cosmos_params, is_training=False)
     fake128 = avg_pool_2x(fake256)
-    o_f = disc(fake256, fake128, theta, is_training=False)
-    lf = o_f["logits"]
+    disc_out_fake = disc(fake256, fake128, cosmos_params, is_training=False)
+    logits_fake = disc_out_fake["logits"]
 
-    loss_real = bce_with_logits(lr, jnp.ones_like(lr))
-    loss_fake = bce_with_logits(lf, jnp.zeros_like(lf))
+    loss_real = bce_with_logits(logits_real, jnp.ones_like(logits_real))
+    loss_fake = bce_with_logits(logits_fake, jnp.zeros_like(logits_fake))
     d_loss = loss_real + loss_fake
 
-    adv = bce_with_logits(lf, jnp.ones_like(lf))
-    rec = jnp.mean(jnp.abs(fake256 - target))
+    adv = bce_with_logits(logits_fake, jnp.ones_like(logits_fake))
+    rec = jnp.mean(jnp.abs(fake256 - targets))
     g_loss = adv + l1_lambda * rec
 
-    d_real_acc = (lr > 0.0).mean()
-    d_fake_acc = (lf < 0.0).mean()
+    d_real_acc = (logits_real > 0.0).mean()
+    d_fake_acc = (logits_fake < 0.0).mean()
     d_acc = 0.5 * (d_real_acc + d_fake_acc)
-    g_trick_acc = (lf > 0.0).mean()
+    g_trick_acc = (logits_fake > 0.0).mean()
 
     return {
         "d_loss": d_loss,
         "d_real_acc": d_real_acc,
         "d_fake_acc": d_fake_acc,
         "d_acc": d_acc,
-        "D_real": jax.nn.sigmoid(lr).mean(),
-        "D_fake": jax.nn.sigmoid(lf).mean(),
+        "D_real": jax.nn.sigmoid(logits_real).mean(),
+        "D_fake": jax.nn.sigmoid(logits_fake).mean(),
         "g_loss": g_loss,
         "g_adv": adv,
         "g_l1": rec,
@@ -242,39 +230,12 @@ def _to_float_dict(metrics: dict[str, jnp.ndarray]) -> dict[str, float]:
     return out
 
 
-def _maybe_wandb_init():
-    if not USE_WANDB:
-        return None
-    try:
-        import wandb  # type: ignore
-
-        wandb.require("core")
-        wandb.init(
-            project=WANDB_PROJECT,
-            name=WANDB_RUN_NAME,
-            mode=WANDB_MODE,
-            config=dict(
-                batch_size=BATCH_SIZE,
-                lr=LEARNING_RATE,
-                beta1=BETA_1,
-                img_size=IMG_SIZE,
-                cond_dim=CONDITION_PARAMS_LEN,
-                train_steps=TRAIN_STEPS_PER_EPOCH,
-                eval_steps=EVAL_STEPS_PER_EPOCH,
-            ),
-        )
-        return wandb
-    except Exception as e:
-        print(f"[WARN] wandb not available or failed to init: {e}")
-        return None
-
-
 def _wandb_images(wandb, batch: dict[str, jnp.ndarray], fake: jnp.ndarray, max_items: int = 3):
     """Log a few image triplets (dm, target, fake). Expect values in [-1,1]."""
-    dm = batch["dm"]
-    tgt = batch["target"]
-    dm_np = jax.device_get(dm[:max_items])
-    tgt_np = jax.device_get(tgt[:max_items])
+    inputs = batch["inputs"]
+    targets = batch["targets"]
+    inputs_np = jax.device_get(inputs[:max_items])
+    targets_np = jax.device_get(targets[:max_items])
     fake_np = jax.device_get(fake[:max_items])
 
     def _to_uint8(x):
@@ -283,80 +244,192 @@ def _wandb_images(wandb, batch: dict[str, jnp.ndarray], fake: jnp.ndarray, max_i
         return x
 
     imgs = []
-    for i in range(min(max_items, dm_np.shape[0])):
-        imgs.append(wandb.Image(_to_uint8(dm_np[i]), caption=f"dm[{i}]"))
-        imgs.append(wandb.Image(_to_uint8(tgt_np[i]), caption=f"target[{i}]"))
+    for i in range(min(max_items, inputs_np.shape[0])):
+        imgs.append(wandb.Image(_to_uint8(inputs_np[i]), caption=f"inputs[{i}]"))
+        imgs.append(wandb.Image(_to_uint8(targets_np[i]), caption=f"target[{i}]"))
         imgs.append(wandb.Image(_to_uint8(fake_np[i]), caption=f"fake[{i}]"))
     return imgs
 
 
 def train(
-    num_epochs: int = NUM_EPOCHS,
-    train_steps_per_epoch: int = TRAIN_STEPS_PER_EPOCH,
-    eval_steps_per_epoch: int = EVAL_STEPS_PER_EPOCH,
+    num_epochs: int,
+    batch_size: int,
+    train_loader: Loader,
+    n_train: int,
+    n_test: int,
+    test_loader: Loader,
+    img_size: int,
+    img_channels: int,
+    cosmos_params_len: int,
+    log_every: int,
+    generator,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
+    discriminator,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
+    opt_gen,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
+    opt_disc,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
+    data_key: Array,
+    use_wandb: bool,
+    args: argparse.Namespace,
 ) -> None:
-    wandb = _maybe_wandb_init()
+    train_steps_per_epoch = math.ceil(n_train / batch_size)
+    eval_steps_per_epoch = math.ceil(n_test / batch_size)
 
-    train_loader, eval_loader = make_dummy_loaders(
-        data_key, BATCH_SIZE, train_steps_per_epoch, IMG_SIZE, IMG_CHANNELS, CONDITION_PARAMS_LEN
-    )
+    if use_wandb:
+        _ = wandb.login()
+        wandb.require("core")
+        wandb.init(  # pyright: ignore[reportUnusedCallResult]
+            project=args.wandb_proj_name,  # pyright: ignore[reportAny]
+            name=args.wandb_run_name,  # pyright: ignore[reportAny]
+            mode="online",
+            config=dict(
+                batch_size=batch_size,
+                lr=args.learning_rate,  # pyright: ignore[reportAny]
+                beta1=args.beta_1,  # pyright: ignore[reportAny]
+                img_size=img_size,
+                cond_dim=cosmos_params_len,
+                train_steps=train_steps_per_epoch,
+                eval_steps=eval_steps_per_epoch,
+            ),
+        )
+
+    train_key, test_key = random.split(data_key)
 
     global_step = 0
     for epoch in range(1, num_epochs + 1):
         # ---------------- TRAIN ----------------
-        for step, batch in enumerate(train_loader, start=1):
-            d_metrics = d_step(discriminator, opt_disc, generator, batch)
-            g_metrics = g_step(generator, opt_gen, discriminator, batch)
+        step = 0
+        train_key = random.fold_in(train_key, epoch)
+        test_key = random.fold_in(test_key, epoch)
+
+        for batch in train_loader(key=train_key, drop_last=False):  # pyright: ignore[reportCallIssue]
+            d_metrics = d_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
+            g_metrics = g_step(generator, opt_gen, discriminator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
 
             global_step += 1
-
-            if step % LOG_EVERY == 0 or step == train_steps_per_epoch:
-                d_log = {f"train/{k}": v for k, v in _to_float_dict(d_metrics).items()}
-                g_log = {f"train/{k}": v for k, v in _to_float_dict(g_metrics).items()}
+            step += 1
+            if step % log_every == 0 or step == train_steps_per_epoch:
+                d_log = {f"train/{k}": v for k, v in _to_float_dict(d_metrics).items()}  # pyright: ignore[reportAny]
+                g_log = {f"train/{k}": v for k, v in _to_float_dict(g_metrics).items()}  # pyright: ignore[reportAny]
                 log = {"epoch": epoch, "step": global_step} | d_log | g_log
                 print(
                     f"[Epoch {epoch:02d} Step {step:04d}] "
-                    f"d_loss={d_log.get('train/d_loss', 0.0):.4f} "
-                    f"d_acc={d_log.get('train/d_acc', 0.0):.3f} "
-                    f"| g_loss={g_log.get('train/g_loss', 0.0):.4f} "
-                    f"g_trick_acc={g_log.get('train/g_trick_acc', 0.0):.3f}"
+                    + f"d_loss={d_log.get('train/d_loss', 0.0):.4f} "
+                    + f"d_acc={d_log.get('train/d_acc', 0.0):.3f} "
+                    + f"| g_loss={g_log.get('train/g_loss', 0.0):.4f} "
+                    + f"g_trick_acc={g_log.get('train/g_trick_acc', 0.0):.3f}"
                 )
-                if wandb is not None:
+                if use_wandb:
                     wandb.log(log, step=global_step)
 
         # Accumulate averages across eval steps
         eval_sums = {}
         first_fake = None
         first_batch = None
-        for step, batch in enumerate(eval_loader, start=1):
-            metrics = eval_step(discriminator, generator, batch, l1_lambda=0.0)
+
+        for batch in test_loader(key=test_key, drop_last=False):  # pyright: ignore[reportCallIssue]
+            metrics = eval_step(discriminator, generator, batch, l1_lambda=0.0)  # pyright: ignore[reportAny, reportUnknownArgumentType]
             if first_fake is None:
-                first_fake = metrics["sample_fake"]
+                first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
                 first_batch = batch
             # Remove large tensors before averaging
-            m = {k: v for k, v in metrics.items() if k != "sample_fake"}
-            for k, v in m.items():
-                eval_sums[k] = eval_sums.get(k, 0.0) + float(jax.device_get(v))
+            m = {k: v for k, v in metrics.items() if k != "sample_fake"}  # pyright: ignore[reportAny]
+            for k, v in m.items():  # pyright: ignore[reportAny]
+                eval_sums[k] = eval_sums.get(k, 0.0) + float(jax.device_get(v))  # pyright: ignore[reportUnknownMemberType, reportAny]
 
-        eval_avg = {k: v / eval_steps_per_epoch for k, v in eval_sums.items()}
+        eval_avg = {k: v / eval_steps_per_epoch for k, v in eval_sums.items()}  # pyright: ignore[reportUnknownVariableType]
 
         print(
             f"[Eval {epoch:02d}] d_loss={eval_avg['d_loss']:.4f} d_acc={eval_avg['d_acc']:.3f} "
-            f"| g_loss={eval_avg['g_loss']:.4f} g_trick_acc={eval_avg['g_trick_acc']:.3f}"
+            + f"| g_loss={eval_avg['g_loss']:.4f} g_trick_acc={eval_avg['g_trick_acc']:.3f}"
         )
 
-        if wandb is not None:
+        if use_wandb:
             wandb.log({f"val/{k}": v for k, v in eval_avg.items()}, step=global_step)
             # Log a small image panel from the first eval batch
             if first_fake is not None and first_batch is not None:
-                imgs = _wandb_images(wandb, first_batch, first_fake)
+                imgs = _wandb_images(wandb, first_batch, first_fake)  # pyright: ignore[reportUnknownVariableType, reportAny]
                 wandb.log({"val/examples": imgs}, step=global_step)
 
-    if USE_WANDB and (wandb is not None):
+    if use_wandb:
         wandb.finish()
 
     print("Training loop finished.")
 
 
+def main(parser: argparse.ArgumentParser):
+    _ = load_dotenv()
+    args = parser.parse_args()
+
+    master_key = random.key(0)
+    gen_key, disc_key, data_key, train_test_key = random.split(master_key, 4)  # pyright: ignore[reportAny]
+
+    train_loader, test_loader, n_train, n_test, img_size, cosmos_params_len = (
+        make_train_test_loaders(
+            key=train_test_key,  # pyright: ignore[reportAny]
+            batch_size=args.batch_size,  # pyright: ignore[reportAny]
+            input_data_path=args.input_maps,  # pyright: ignore[reportAny]
+            output_data_path=args.output_maps,  # pyright: ignore[reportAny]
+            csv_path=args.cosmos_params,  # pyright: ignore[reportAny]
+        )
+    )
+
+    generator: Generator = Generator(  # pyright: ignore[reportUnknownVariableType]
+        key=gen_key,
+        in_features=args.img_channels,  # pyright: ignore[reportAny]
+        out_features=args.img_channels,  # pyright: ignore[reportAny]
+        len_condition_params=cosmos_params_len,
+    )
+    discriminator = Discriminator(  # pyright: ignore[reportUnknownVariableType]
+        key=disc_key,
+        in_features=args.img_channels,  # pyright: ignore[reportAny]
+        len_condition_params=cosmos_params_len,
+    )
+
+    opt_gen = nnx.Optimizer(  # pyright: ignore[reportUnknownVariableType]
+        generator,  # pyright: ignore[reportUnknownArgumentType]
+        optax.adam(args.learning_rate, b1=args.beta_1),  # pyright: ignore[ reportAny]
+        wrt=nnx.Param,
+    )
+    opt_disc = nnx.Optimizer(  # pyright: ignore[reportUnknownVariableType]
+        discriminator,  # pyright: ignore[reportUnknownArgumentType]
+        optax.adam(args.learning_rate, b1=args.beta_1),  # pyright: ignore[reportAny]
+        wrt=nnx.Param,
+    )
+
+    train(
+        num_epochs=args.epochs,  # pyright: ignore[reportAny]
+        batch_size=args.batch_size,  # pyright: ignore[reportAny]
+        train_loader=train_loader,
+        n_train=n_train,
+        test_loader=test_loader,
+        n_test=n_test,
+        img_size=img_size,
+        img_channels=args.img_channels,  # pyright: ignore[reportAny]
+        cosmos_params_len=cosmos_params_len,
+        log_every=args.log_every,  # pyright: ignore[reportAny]
+        generator=generator,  # pyright: ignore[reportUnknownArgumentType]
+        discriminator=discriminator,  # pyright: ignore[reportUnknownArgumentType]
+        opt_gen=opt_gen,
+        opt_disc=opt_disc,
+        data_key=data_key,  # pyright: ignore[reportAny]
+        use_wandb=args.use_wandb,  # pyright: ignore[reportAny]
+        args=args,
+    )
+
+
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser("Training Script")
+
+    parser.add_argument("--batch-size", default=8)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--learning-rate", deafult=2e-4)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--beta-1", default=0.5)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--epochs", default=5)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--log-rate", default=20)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--input-maps")  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--output-maps")  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--cosmos-params")  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--img-channels", default=1)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--use-wandb", action="store_true", default=True)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--wandb-proj-name", default="astro-gan")  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--wandb-run-name", default="nnx-cgan-256")  # pyright: ignore[reportUnusedCallResult]
+
+    main(parser)

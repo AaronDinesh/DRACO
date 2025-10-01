@@ -2,14 +2,14 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 from flax import nnx
-from jax.typing import ArrayLike
+from jax._src.typing import Array
 
 
 class FiLM(nnx.Module):
-    def __init__(self, theta_dim: int, out_features: int, key: ArrayLike):
-        self.gamma_key, self.beta_key = random.split(key)  # type: ignore
-        self.gamma: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(self.gamma_key))  # type: ignore
-        self.beta: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(self.beta_key))  # type: ignore
+    def __init__(self, theta_dim: int, out_features: int, key: Array):
+        self.gamma_key, self.beta_key = random.split(key)  # pyright: ignore[reportAny, reportUnannotatedClassAttribute]
+        self.gamma: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(self.gamma_key))  # pyright: ignore[reportAny]
+        self.beta: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(self.beta_key))  # pyright: ignore[reportAny]
 
     def __call__(self, input: jnp.ndarray, condition_param: jnp.ndarray) -> jnp.ndarray:
         # This is because my tensor is of shape (B, H, W, C)
@@ -21,13 +21,13 @@ class FiLM(nnx.Module):
 class downsample(nnx.Module):
     def __init__(
         self,
-        key: ArrayLike,
+        key: Array,
         in_features: int,
         out_features: int,
         size: tuple[int, int],
         apply_BatchNorm: bool = True,
     ):
-        self.conv_key, self.batch_norm_key = random.split(key)  # type: ignore
+        self.conv_key, self.batch_norm_key = random.split(key)  # pyright: ignore[reportAny, reportUnannotatedClassAttribute]
         self.conv_block: nnx.Conv = nnx.Conv(
             in_features=in_features,
             out_features=out_features,
@@ -35,10 +35,11 @@ class downsample(nnx.Module):
             strides=2,
             padding="SAME",
             use_bias=False,
-            rngs=nnx.Rngs(self.conv_key),
+            rngs=nnx.Rngs(self.conv_key),  # pyright: ignore[reportAny]
         )
         self.batch_norm: nnx.BatchNorm = nnx.BatchNorm(
-            num_features=out_features, rngs=nnx.Rngs(self.batch_norm_key)
+            num_features=out_features,
+            rngs=nnx.Rngs(self.batch_norm_key),  # pyright: ignore[reportAny]
         )
         self.apply_BatchNorm: bool = apply_BatchNorm
 
@@ -52,13 +53,13 @@ class downsample(nnx.Module):
 class upsample(nnx.Module):
     def __init__(
         self,
-        key: ArrayLike,
+        key: Array,
         in_features: int,
         out_features: int,
         size: tuple[int, int],
         apply_Dropout: bool = True,
     ):
-        self.conv_key, self.batch_norm_key, self.dropout_key = random.split(key, 3)  # type: ignore
+        self.conv_key, self.batch_norm_key, self.dropout_key = random.split(key, 3)  # pyright: ignore[reportAny, reportUnannotatedClassAttribute]
         self.conv_block: nnx.ConvTranspose = nnx.ConvTranspose(
             in_features=in_features,
             out_features=out_features,
@@ -66,13 +67,14 @@ class upsample(nnx.Module):
             strides=2,
             padding="SAME",
             use_bias=False,
-            rngs=nnx.Rngs(self.conv_key),
+            rngs=nnx.Rngs(self.conv_key),  # pyright: ignore[reportAny]
         )
         self.batch_norm: nnx.BatchNorm = nnx.BatchNorm(
-            num_features=out_features, rngs=nnx.Rngs(self.batch_norm_key)
+            num_features=out_features,
+            rngs=nnx.Rngs(self.batch_norm_key),  # pyright: ignore[reportAny]
         )
 
-        self.dropout: nnx.Dropout = nnx.Dropout(rate=0.5, rngs=nnx.Rngs(self.dropout_key))
+        self.dropout: nnx.Dropout = nnx.Dropout(rate=0.5, rngs=nnx.Rngs(self.dropout_key))  # pyright: ignore[reportAny]
 
         self.apply_Dropout: bool = apply_Dropout
 
@@ -85,9 +87,14 @@ class upsample(nnx.Module):
 
 
 class Generator(nnx.Module):
+    key: Array
+    in_features: int
+    out_features: int
+    len_condition_params: int
+
     def __init__(
-        self, key: ArrayLike, in_features: int, out_features: int, len_condition_params: int
-    ):
+        self, key: Array, in_features: int, out_features: int, len_condition_params: int
+    ) -> None:
         keys: jax.Array = random.split(key, 25)
 
         # fmt: off
