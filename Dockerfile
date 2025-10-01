@@ -4,9 +4,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # 3. Install Python, pip, git, curl, and other essentials
 RUN apt-get update && \
+    add-apt-repository ppa:deadsnakes/ppa && \
     apt-get install -y \
-    python3.10 \
-    python3.10-venv \
+    python3.13 \
+    python3.13-venv \
     python3-pip \
     git \
     curl \
@@ -15,8 +16,8 @@ RUN apt-get update && \
     build-essential \
     && \
     # Make python3.10 the default python3 (optional but good for consistency)
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 && \
-    update-alternatives --set python3 /usr/bin/python3.10 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 1 && \
+    update-alternatives --set python3 /usr/bin/python3.13 && \
     # Clean up
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
