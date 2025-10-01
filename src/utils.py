@@ -1,7 +1,9 @@
 import jax.numpy as jnp
 
 
-def to_log_space(x, eps=1e-6, offset=None):
+def to_log_space(
+    x: jnp.ndarray, eps: float = 1e-6, offset: jnp.ndarray | None = None
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     # x: NHWC, can contain negatives if background-subtracted
     if offset is None:
         # choose a per-image/channel offset so min>=0
@@ -12,5 +14,5 @@ def to_log_space(x, eps=1e-6, offset=None):
     return x_log, offset  # keep offset to invert later
 
 
-def from_log_space(x_log, offset):
+def from_log_space(x_log: jnp.ndarray, offset: jnp.ndarray) -> jnp.ndarray:
     return jnp.expm1(x_log) - offset
