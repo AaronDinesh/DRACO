@@ -6,13 +6,10 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "flax>=0.11.2",
-    "graphviz>=0.21",
     "jax>=0.7.2",
-    "matplotlib>=3.10.6",
     "numpy>=2.3.3",
     "optax>=0.2.6",
     "pandas>=2.3.2",
-    "pyqt5>=5.15.11",
     "python-dotenv>=1.1.1",
     "tqdm>=4.67.1",
     "wandb>=0.22.0",

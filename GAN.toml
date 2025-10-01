@@ -1,0 +1,19 @@
+image = "${STORE}/ce-images/ska-gan-jax-25.08.sqsh" 
+
+mounts = [
+    "/capstor",
+    "/iopsstor",
+    "${HOME}/DRACO"
+] 
+
+workdir = "." 
+
+[annotations]
+com.hooks.aws_ofi_nccl.enabled = "true" 
+com.hooks.aws_ofi_nccl.variant = "cuda12"
+
+[env]
+NCCL_DEBUG = "INFO" 
+CUDA_CACHE_DISABLE = "1" 
+TORCH_NCCL_ASYNC_ERROR_HANDLING = "1" 
+MPICH_GPU_SUPPORT_ENABLED = "0"
