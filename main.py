@@ -306,8 +306,11 @@ def train(
             mode="online",
             config=dict(
                 batch_size=batch_size,
-                lr=args.learning_rate,  # pyright: ignore[reportAny]
-                beta1=args.beta_1,  # pyright: ignore[reportAny]
+                g_lr=args.g_lr,  # pyright: ignore[reportAny]
+                d_lr=args.d_lr,  # pyright: ignore[reportAny]
+                beta1=args.beta1,  # pyright: ignore[reportAny]
+                beta2=args.beta2,  # pyright: ignore[reportAny]
+                n_critic=args.n_critic,  # pyright: ignore[reportAny]
                 img_size=img_size,
                 cond_dim=cosmos_params_len,
                 train_steps=train_steps_per_epoch,
@@ -341,8 +344,22 @@ def train(
             global_step += 1
             step += 1
             if step % log_every == 0 or step == train_steps_per_epoch:
-                save_checkpoint(args.checkpoint_dir, epoch, step, generator, opt_gen)  # pyright: ignore[reportAny, reportUnknownArgumentType]
-                save_checkpoint(args.checkpoint_dir, epoch, step, discriminator, opt_disc)  # pyright: ignore[reportAny, reportUnknownArgumentType]
+                save_checkpoint(
+                    args.checkpoint_dir,
+                    epoch,
+                    step,
+                    generator,
+                    opt_gen,
+                    model_name="generator",  # pyright: ignore[reportUnknownArgumentType, reportAny]
+                )
+                save_checkpoint(
+                    args.checkpoint_dir,
+                    epoch,
+                    step,
+                    discriminator,
+                    opt_disc,
+                    model_name="discriminator",
+                )
 
                 d_log = {f"train/{k}": v for k, v in _to_float_dict(d_metrics).items()}  # pyright: ignore[reportAny]
                 g_log = {f"train/{k}": v for k, v in _to_float_dict(g_metrics).items()}  # pyright: ignore[reportAny]
@@ -493,14 +510,14 @@ def main(parser: argparse.ArgumentParser):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Training Script")
 
-    parser.add_argument("--batch-size", default=500)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--batch-size", default=64)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--g-lr", type=float, default=1e-4)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--d-lr", type=float, default=2e-4)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta1", type=float, default=0.0)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta2", type=float, default=0.99)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--n-critic", type=int, default=1)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--transform-name", default="signed_log1p")  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--epochs", default=5)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--epochs", default=100)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--log-rate", default=5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--input-maps")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--output-maps")  # pyright: ignore[reportUnusedCallResult]

@@ -54,6 +54,7 @@ def save_checkpoint(
     step: int,
     model: nnx.Module,
     optimizer: nnx.Optimizer,  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType],
+    model_name: str | None = None,
     alt_name: str | None = None,
 ) -> None:
     ckpt_dir = Path(checkpoint_dir)
@@ -68,7 +69,7 @@ def save_checkpoint(
     }
 
     if alt_name is None:
-        save_path = ckpt_dir / f"epoch_{epoch:07d}_step_{step:07d}"
+        save_path = ckpt_dir / f"{model_name}_epoch_{epoch:07d}_step_{step:07d}"
     else:
         save_path = ckpt_dir / alt_name
 

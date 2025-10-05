@@ -30,8 +30,8 @@ RUN echo "Installing uv..." && \
 ENV PATH="/root/.local/bin:${PATH}"
 RUN uv --version
 
-# RUN mkdir /DRACO
-# WORKDIR /DRACO
+# RUN mkdir /home/DRACO
+# WORKDIR /home/DRACO
 
 
 
