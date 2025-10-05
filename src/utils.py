@@ -1,18 +1,82 @@
+from pathlib import Path
+from typing import Callable, Literal
+
+import flax.nnx as nnx
 import jax.numpy as jnp
+import orbax.checkpoint as ocp
+
+from src.typing import TransformName
+
+_STD_CHKPTR = ocp.StandardCheckpointer()
 
 
-def to_log_space(
-    x: jnp.ndarray, eps: float = 1e-6, offset: jnp.ndarray | None = None
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    # x: NHWC, can contain negatives if background-subtracted
-    if offset is None:
-        # choose a per-image/channel offset so min>=0
-        minv = jnp.min(x, axis=(1, 2), keepdims=True)
-        offset = jnp.maximum(-minv, 0.0) + eps
-    x_shift = x + offset
-    x_log = jnp.log1p(jnp.maximum(x_shift, eps))
-    return x_log, offset  # keep offset to invert later
+def make_transform(
+    name: TransformName,
+    scale: float = 1.0,
+) -> tuple[Callable[[jnp.ndarray], jnp.ndarray], Callable[[jnp.ndarray], jnp.ndarray]]:
+    """
+    Returns (forward, inverse) intensity transforms.
+    The 'scale' roughly sets the transition between linear and log-like behavior.
+    """
+    if name == "none":
+        return (lambda x: x, lambda y: y)
+
+    if name == "asinh":
+        # y = asinh(x/s),  x = s*sinh(y)
+        s = float(scale)
+
+        def forward(x: jnp.ndarray):
+            return jnp.arcsinh(x / s)
+
+        def inverse(y: jnp.ndarray):
+            return s * jnp.sinh(y)
+
+        return forward, inverse
+
+    if name == "signed_log1p":
+        # y = sign(x) * log(1 + |x|/s),  x = sign(y)*s*(exp(|y|)-1)
+        s = float(scale)
+
+        def forward(x: jnp.ndarray):
+            return jnp.sign(x) * jnp.log1p(jnp.abs(x) / s)
+
+        def inverse(y: jnp.ndarray):
+            return jnp.sign(y) * s * (jnp.expm1(jnp.abs(y)))
+
+        return forward, inverse
+
+    raise ValueError(f"Unknown transform name: {name!r}")  # pyright: ignore[reportUnreachable]
 
 
-def from_log_space(x_log: jnp.ndarray, offset: jnp.ndarray) -> jnp.ndarray:
-    return jnp.expm1(x_log) - offset
+def save_checkpoint(
+    checkpoint_dir: str,
+    epoch: int,
+    step: int,
+    model: nnx.Module,
+    optimizer: nnx.Optimizer,  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType],
+    alt_name: str | None = None,
+) -> None:
+    ckpt_dir = Path(checkpoint_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    _, model_state = nnx.split(model)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    _, opt_state = nnx.split(optimizer)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportUnknownArgumentType]
+
+    payload = {  # pyright: ignore[reportUnknownVariableType]
+        "model_state": model_state,
+        "opt_state": opt_state,
+    }
+
+    if alt_name is None:
+        save_path = ckpt_dir / f"epoch_{epoch:07d}_step_{step:07d}"
+    else:
+        save_path = ckpt_dir / alt_name
+
+    _STD_CHKPTR.save(str(save_path), payload)
+
+
+def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer):  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
+    checkpoint = _STD_CHKPTR.restore(checkpoint_path)  # pyright: ignore[reportAny]
+
+    nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
+    nnx.update(optimizer, checkpoint["optimizer"])  # pyright: ignore[reportUnknownMemberType]

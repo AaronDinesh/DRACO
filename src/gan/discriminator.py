@@ -1,4 +1,3 @@
-
 import jax.numpy as jnp
 import jax.random as random
 from flax import nnx
@@ -74,7 +73,7 @@ class conv_block(nnx.Module):
         out_features: int,
         size: tuple[int, int] = (3, 3),
         stride: int = 1,
-        apply_BatchNorm: bool = True,
+        apply_BatchNorm: bool = False,
         apply_spectral_norm: bool = True,
         activation: str = "leaky_relu",
     ):

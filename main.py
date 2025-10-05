@@ -8,14 +8,15 @@ import jax.numpy as jnp
 import jax.random as random
 import optax
 import pandas as pd
-import wandb
 from dotenv import load_dotenv
 from flax import nnx
 from jax._src.typing import Array
 from tqdm.auto import tqdm
 
 import src
-from src.typing import Batch, Loader
+import wandb
+from src.typing import Batch, Loader, TransformName
+from src.utils import make_transform, restore_checkpoint, save_checkpoint
 
 
 def avg_pool_2x(x: jnp.ndarray) -> jnp.ndarray:
@@ -30,6 +31,7 @@ def make_train_test_loaders(
     output_data_path: str,
     csv_path: str,
     test_ratio: float = 0.2,
+    transform_name: TransformName = "signed_log1p",
 ) -> tuple[Loader, Loader, int, int, int, int]:
     input_maps = jnp.load(input_data_path, mmap_mode="r")
     output_maps = jnp.load(output_data_path, mmap_mode="r")
@@ -57,6 +59,8 @@ def make_train_test_loaders(
     test_idx = random_shuffle[:n_test]
     train_idx = random_shuffle[n_test:]
 
+    forward_transform, _ = make_transform(name=transform_name)
+
     # This ensures that there is no data leakage
     assert len(jnp.intersect1d(train_idx, test_idx)) == 0
 
@@ -77,8 +81,8 @@ def make_train_test_loaders(
             batch = shuffled_idx[s : s + batch_size]
 
             yield {
-                "inputs": _add_channel_last(input_maps[batch]),
-                "targets": _add_channel_last(output_maps[batch]),
+                "inputs": forward_transform(_add_channel_last(input_maps[batch])),
+                "targets": forward_transform(_add_channel_last(output_maps[batch])),
                 "params": cosmos_params[batch],
             }
 
@@ -238,24 +242,31 @@ def _to_float_dict(metrics: dict[str, jnp.ndarray]) -> dict[str, float]:
     return out
 
 
-def _wandb_images(wandb, batch: dict[str, jnp.ndarray], fake: jnp.ndarray, max_items: int = 3):
-    """Log a few image triplets (dm, target, fake). Expect values in [-1,1]."""
-    inputs = batch["inputs"]
-    targets = batch["targets"]
-    inputs_np = jax.device_get(inputs[:max_items])
-    targets_np = jax.device_get(targets[:max_items])
-    fake_np = jax.device_get(fake[:max_items])
+def _wandb_images(
+    wandb,
+    batch: dict[str, jnp.ndarray],
+    fake: jnp.ndarray,
+    max_items: int = 3,
+    transform_name: TransformName = "signed_log1p",
+):
+    _, inverse_transform = make_transform(name=transform_name)
 
-    def _to_uint8(x):
-        x = (x * 0.5 + 0.5).clip(0.0, 1.0)  # [-1,1] -> [0,1]
-        x = (x * 255.0).astype(jnp.uint8)
-        return x
+    def _to_uint8_linear(x):
+        x_lin = inverse_transform(x)
+        lo = jnp.percentile(x_lin, 1.0)
+        hi = jnp.percentile(x_lin, 99.0)
+        x01 = jnp.clip((x_lin - lo) / jnp.maximum(hi - lo, 1e-8), 0.0, 1.0)
+        return (x01 * 255.0).astype(jnp.uint8)
+
+    inputs = batch["inputs"][:max_items]
+    targets = batch["targets"][:max_items]
+    fake = fake[:max_items]
 
     imgs = []
-    for i in range(min(max_items, inputs_np.shape[0])):
-        imgs.append(wandb.Image(_to_uint8(inputs_np[i]), caption=f"inputs[{i}]"))
-        imgs.append(wandb.Image(_to_uint8(targets_np[i]), caption=f"target[{i}]"))
-        imgs.append(wandb.Image(_to_uint8(fake_np[i]), caption=f"fake[{i}]"))
+    for i in range(min(max_items, inputs.shape[0])):
+        imgs.append(wandb.Image(_to_uint8_linear(inputs[i]), caption=f"inputs[{i}] lin"))
+        imgs.append(wandb.Image(_to_uint8_linear(targets[i]), caption=f"target[{i}] lin"))
+        imgs.append(wandb.Image(_to_uint8_linear(fake[i]), caption=f"fake[{i}] lin"))
     return imgs
 
 
@@ -270,8 +281,8 @@ def train(
     img_channels: int,
     cosmos_params_len: int,
     log_every: int,
-    generator,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
-    discriminator,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
+    generator: nnx.Module,
+    discriminator: nnx.Module,
     opt_gen,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
     opt_disc,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
     data_key: Array,
@@ -280,6 +291,9 @@ def train(
 ) -> None:
     train_steps_per_epoch = math.ceil(n_train / batch_size)
     eval_steps_per_epoch = math.ceil(n_test / batch_size)
+
+    best_disc_acc: float = 0.0
+    best_gan_loss: float = jnp.inf
 
     if use_wandb:
         print("----- Setting up WANDB -----")
@@ -312,19 +326,24 @@ def train(
         train_key = random.fold_in(train_key, epoch)
         test_key = random.fold_in(test_key, epoch)
 
-        for batch in tqdm(
-            train_loader(key=train_key, drop_last=False),
+        for batch in tqdm(  # pyright: ignore[reportUnknownVariableType]
+            train_loader(key=train_key, drop_last=False),  # pyright: ignore[reportUnknownArgumentType, reportCallIssue]
             total=train_steps_per_epoch,
             leave=False,
             position=1,
             desc="Running Training Batch",
-        ):  # pyright: ignore[reportCallIssue]
+        ):
             d_metrics = d_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
-            g_metrics = g_step(generator, opt_gen, discriminator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
+
+            if (step % args.n_critic) == 0:
+                g_metrics = g_step(generator, opt_gen, discriminator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
 
             global_step += 1
             step += 1
             if step % log_every == 0 or step == train_steps_per_epoch:
+                save_checkpoint(args.checkpoint_dir, epoch, step, generator, opt_gen)  # pyright: ignore[reportAny, reportUnknownArgumentType]
+                save_checkpoint(args.checkpoint_dir, epoch, step, discriminator, opt_disc)  # pyright: ignore[reportAny, reportUnknownArgumentType]
+
                 d_log = {f"train/{k}": v for k, v in _to_float_dict(d_metrics).items()}  # pyright: ignore[reportAny]
                 g_log = {f"train/{k}": v for k, v in _to_float_dict(g_metrics).items()}  # pyright: ignore[reportAny]
                 log = {"epoch": epoch, "step": global_step} | d_log | g_log
@@ -349,7 +368,7 @@ def train(
             leave=False,
             position=1,
             desc="Running Eval Batch",
-        ):  # pyright: ignore[reportCallIssue]
+        ):
             metrics = eval_step(discriminator, generator, batch, l1_lambda=0.0)  # pyright: ignore[reportAny, reportUnknownArgumentType]
             if first_fake is None:
                 first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
@@ -361,6 +380,28 @@ def train(
 
         eval_avg = {k: v / eval_steps_per_epoch for k, v in eval_sums.items()}  # pyright: ignore[reportUnknownVariableType]
 
+        if eval_avg["d_acc"] > best_disc_acc:
+            best_disc_acc = eval_avg["d_acc"]
+            save_checkpoint(
+                args.checkpoint_dir,
+                epoch,
+                global_step,
+                discriminator,
+                opt_disc,
+                alt_name=f"BEST_DISC_ACC_acc_{best_disc_acc:.04f}",
+            )
+
+        if eval_avg["g_loss"] < best_gan_loss:
+            best_gan_loss = eval_avg["g_loss"]
+            save_checkpoint(
+                args.checkpoint_dir,
+                epoch,
+                global_step,
+                generator,
+                opt_gen,
+                alt_name=f"BEST_GAN_LOSS_loss_{best_gan_loss:.04f}",
+            )
+
         print(
             f"[Eval {epoch:02d}] d_loss={eval_avg['d_loss']:.4f} d_acc={eval_avg['d_acc']:.3f} "
             + f"| g_loss={eval_avg['g_loss']:.4f} g_trick_acc={eval_avg['g_trick_acc']:.3f}"
@@ -370,7 +411,9 @@ def train(
             wandb.log({f"val/{k}": v for k, v in eval_avg.items()}, step=global_step)
             # Log a small image panel from the first eval batch
             if first_fake is not None and first_batch is not None:
-                imgs = _wandb_images(wandb, first_batch, first_fake)  # pyright: ignore[reportUnknownVariableType, reportAny]
+                imgs = _wandb_images(
+                    wandb, first_batch, first_fake, transform_name=args.transform_name
+                )  # pyright: ignore[reportUnknownVariableType, reportAny]
                 wandb.log({"val/examples": imgs}, step=global_step)
 
     if use_wandb:
@@ -394,6 +437,7 @@ def main(parser: argparse.ArgumentParser):
             input_data_path=args.input_maps,  # pyright: ignore[reportAny]
             output_data_path=args.output_maps,  # pyright: ignore[reportAny]
             csv_path=args.cosmos_params,  # pyright: ignore[reportAny]
+            transform_name=args.transform_name,
         )
     )
 
@@ -415,12 +459,12 @@ def main(parser: argparse.ArgumentParser):
     print("----- Creating Optimizers -----")
     opt_gen = nnx.Optimizer(
         generator,
-        optax.adam(args.learning_rate, b1=args.beta_1),  # pyright: ignore[ reportAny]
+        optax.adam(args.g_lr, b1=args.beta1, b2=args.beta2),  # pyright: ignore[ reportAny]
         wrt=nnx.Param,
     )
     opt_disc = nnx.Optimizer(
         discriminator,
-        optax.adam(args.learning_rate, b1=args.beta_1),  # pyright: ignore[reportAny]
+        optax.adam(args.d_lr, b1=args.beta1, b2=args.beta2),  # pyright: ignore[reportAny]
         wrt=nnx.Param,
     )
 
@@ -450,8 +494,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("Training Script")
 
     parser.add_argument("--batch-size", default=500)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--learning-rate", default=2e-4)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--beta-1", default=0.5)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--g-lr", type=float, default=1e-4)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--d-lr", type=float, default=2e-4)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--beta1", type=float, default=0.0)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--beta2", type=float, default=0.99)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--n-critic", type=int, default=1)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--transform-name", default="signed_log1p")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--epochs", default=5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--log-rate", default=5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--input-maps")  # pyright: ignore[reportUnusedCallResult]

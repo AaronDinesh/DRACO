@@ -1,7 +1,9 @@
 from collections.abc import Generator
-from typing import Callable, TypedDict
+from typing import Callable, Literal, TypedDict
 
 from jax import Array
+
+TransformName = Literal["none", "asinh", "signed_log1p"]
 
 
 class Batch(TypedDict):
