@@ -8,13 +8,13 @@ import jax.numpy as jnp
 import jax.random as random
 import optax
 import pandas as pd
+import wandb
 from dotenv import load_dotenv
 from flax import nnx
 from jax._src.typing import Array
 from tqdm.auto import tqdm
 
 import src
-import wandb
 from src.typing import Batch, Loader
 
 
@@ -449,7 +449,7 @@ def main(parser: argparse.ArgumentParser):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Training Script")
 
-    parser.add_argument("--batch-size", default=8)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--batch-size", default=500)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--learning-rate", default=2e-4)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta-1", default=0.5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--epochs", default=5)  # pyright: ignore[reportUnusedCallResult]
@@ -457,6 +457,7 @@ if __name__ == "__main__":
     parser.add_argument("--input-maps")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--output-maps")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--cosmos-params")  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--checkpoint-dir")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--img-channels", default=1)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--use-wandb", action="store_true", default=True)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--wandb-proj-name", default="DRACO")  # pyright: ignore[reportUnusedCallResult]

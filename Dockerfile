@@ -18,6 +18,8 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+
+
 RUN python3 --version && python3 -m pip --version
 
 # 4. Install uv
@@ -28,6 +30,13 @@ RUN echo "Installing uv..." && \
 ENV PATH="/root/.local/bin:${PATH}"
 RUN uv --version
 
-RUN echo "Creating Python 3.13.7 virtual environment with uv..." && \
-    uv venv .venv --python python3.13.7
+# RUN mkdir /DRACO
+# WORKDIR /DRACO
 
+
+
+# COPY . ./
+
+# RUN echo "Creating Python 3.13.7 virtual environment with uv..." && \
+#     uv venv .venv --python python3.13.7 && \
+#     uv sync
