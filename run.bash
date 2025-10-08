@@ -1,4 +1,4 @@
-srun --environment=$HOME/DRACO/GAN.toml -A sk030 -p normal -t 02:30:00 --gpus=1 --job-name=gan_uv \
+srun --environment=$HOME/DRACO/GAN.toml -A sk030 -p normal -t 02:30:00 -G 1 --job-name=gan_uv \
   --output=./logs/gan_%j.out --error=./logs/gan_%j.err \
   bash -lc 'cd /users/adinesh/DRACO && source .venv/bin/activate && uv run main.py \
     --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \

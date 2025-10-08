@@ -8,28 +8,28 @@ class SpectralNorm(nnx.Module):
     """Applies spectral normalization to a module's kernel."""
 
     def __init__(self, module: nnx.Module, *, rngs: nnx.Rngs):
-        self.module = module
+        self.module: nnx.Module = module
 
         if not hasattr(self.module, "kernel"):
             raise ValueError("Wrapped module must have a 'kernel' attribute.")
 
-        kernel_shape = self.module.kernel.shape
+        kernel_shape = self.module.kernel.shape  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportAttributeAccessIssue]
         # Reshape kernel to a 2D matrix for spectral norm calculation
         # For Conv: (H, W, C_in, C_out) -> (C_out, H * W * C_in)
         # For Linear: (C_in, C_out) -> (C_out, C_in)
-        if len(kernel_shape) == 4:  # Conv
-            self.c_out = kernel_shape[3]
-            self.get_w_reshaped = lambda w: w.reshape(-1, self.c_out).T
-        elif len(kernel_shape) == 2:  # Linear
-            self.c_out = kernel_shape[1]
-            self.get_w_reshaped = lambda w: w.T
+        if len(kernel_shape) == 4:  # Conv  # pyright: ignore[reportUnknownArgumentType]
+            self.c_out: int = kernel_shape[3]
+            self.get_w_reshaped = lambda w: w.reshape(-1, self.c_out).T  # pyright: ignore[reportUnknownMemberType, reportUnknownLambdaType, reportUnannotatedClassAttribute]
+        elif len(kernel_shape) == 2:  # Linear  # pyright: ignore[reportUnknownArgumentType]
+            self.c_out: int = kernel_shape[1]
+            self.get_w_reshaped = lambda w: w.T  # pyright: ignore[reportUnknownMemberType]
         else:
             raise ValueError(f"Unsupported kernel shape: {kernel_shape}")
 
         # Initialize the power iteration vector 'u'
         key = rngs.params()
-        u_shape = (1, self.c_out)
-        u_init = random.normal(key, u_shape)
+        u_shape: tuple[int, int] = (1, self.c_out)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        u_init: jnp.ndarray = random.normal(key, u_shape)
         u_init = u_init / jnp.linalg.norm(u_init)
         self.u = nnx.Variable(u_init, collection="spectral_stats")
 

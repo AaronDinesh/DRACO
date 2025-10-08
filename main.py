@@ -454,7 +454,7 @@ def main(parser: argparse.ArgumentParser):
             input_data_path=args.input_maps,  # pyright: ignore[reportAny]
             output_data_path=args.output_maps,  # pyright: ignore[reportAny]
             csv_path=args.cosmos_params,  # pyright: ignore[reportAny]
-            transform_name=args.transform_name,
+            transform_name=args.transform_name,  # pyright: ignore[reportAny]
         )
     )
 
@@ -462,7 +462,7 @@ def main(parser: argparse.ArgumentParser):
     generator = src.Generator(
         key=gen_key,
         in_features=args.img_channels,  # pyright: ignore[reportAny]
-        out_features=args.img_channels,  # pyright: ignore[reportAny]
+        out_features=args.img_channels,  # p# pyright: ignore[reportUnusedCallResult]yright: ignore[reportAny]
         len_condition_params=cosmos_params_len,
     )
 
@@ -510,12 +510,12 @@ def main(parser: argparse.ArgumentParser):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Training Script")
 
-    parser.add_argument("--batch-size", default=64)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--g-lr", type=float, default=1e-4)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--batch-size", default=128)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--g-lr", type=float, default=1e-3)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--d-lr", type=float, default=2e-4)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--beta1", type=float, default=0.0)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--beta1", type=float, default=0.5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta2", type=float, default=0.99)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--n-critic", type=int, default=1)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--n-critic", type=int, default=5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--transform-name", default="signed_log1p")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--epochs", default=100)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--log-rate", default=5)  # pyright: ignore[reportUnusedCallResult]
@@ -526,6 +526,6 @@ if __name__ == "__main__":
     parser.add_argument("--img-channels", default=1)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--use-wandb", action="store_true", default=True)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--wandb-proj-name", default="DRACO")  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--wandb-run-name", default="nnx-cgan-256-run-1")  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--wandb-run-name", default="nnx-cgan-256-run-2")  # pyright: ignore[reportUnusedCallResult]
 
     main(parser)
