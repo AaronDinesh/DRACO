@@ -126,8 +126,10 @@ class film(nnx.Module):
         self.beta: nnx.Linear = nnx.Linear(theta_dim, out_features, rngs=nnx.Rngs(k2))
 
     def __call__(self, x: jnp.ndarray, theta: jnp.ndarray):
-        gamma = self.gamma(theta)[:, None, None, :]  # [B,1,1,C]
-        beta = self.beta(theta)[:, None, None, :]  # [B,1,1,C]
+        gamma = 0.1 * jnp.tanh(self.gamma(theta))[:, None, None, :]
+        beta = 0.1 * jnp.tanh(self.beta(theta))[:, None, None, :]
+        # gamma = self.gamma(theta)[:, None, None, :]  # [B,1,1,C]
+        # beta = self.beta(theta)[:, None, None, :]  # [B,1,1,C]
         return x * (1.0 + gamma) + beta
 
 
@@ -159,6 +161,7 @@ class sle_block(nnx.Module):
         g = jnp.mean(low, axis=(1, 2), keepdims=True)  # [B,1,1,Clow]
         g = nnx.relu(self.conv_block1(g))  # [B,1,1,Hid]
         g = self.conv_block2(g)  # [B,1,1,Chigh]
+        g = 1.0 + 0.1 * jnp.tanh(g)  # gate in ~[0.9, 1.1]
         return high * g  # broadcast over H,W
 
 

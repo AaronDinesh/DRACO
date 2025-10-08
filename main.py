@@ -6,6 +6,7 @@ import os
 import jax
 import jax.numpy as jnp
 import jax.random as random
+import numpy as np
 import optax
 import pandas as pd
 from dotenv import load_dotenv
@@ -251,12 +252,22 @@ def _wandb_images(
 ):
     _, inverse_transform = make_transform(name=transform_name)
 
-    def _to_uint8_linear(x):
-        x_lin = inverse_transform(x)
-        lo = jnp.percentile(x_lin, 1.0)
-        hi = jnp.percentile(x_lin, 99.0)
-        x01 = jnp.clip((x_lin - lo) / jnp.maximum(hi - lo, 1e-8), 0.0, 1.0)
-        return (x01 * 255.0).astype(jnp.uint8)
+    def _to_uint8_linear(x: jnp.ndarray):
+        # x = inverse_transform(x)
+        lo = jnp.percentile(x, 1.0)
+        hi = jnp.percentile(x, 99.0)
+        x01 = jnp.clip((x - lo) / jnp.maximum(hi - lo, 1e-8), 0.0, 1.0)
+        img = (x01 * 255.0).astype(jnp.uint8)
+
+        # --- NEW: JAX -> NumPy for wandb.Image/PIL ---
+        img = jax.device_get(img)
+        img = np.asarray(img)
+
+        # If it’s HxWx1, make it HxW so PIL treats it as grayscale
+        if img.ndim == 3 and img.shape[-1] == 1:
+            img = img[..., 0]
+
+        return img
 
     inputs = batch["inputs"][:max_items]
     targets = batch["targets"][:max_items]
@@ -336,31 +347,14 @@ def train(
             position=1,
             desc="Running Training Batch",
         ):
-            d_metrics = d_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
+            g_metrics = g_step(generator, opt_gen, discriminator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
 
             if (step % args.n_critic) == 0:
-                g_metrics = g_step(generator, opt_gen, discriminator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
+                d_metrics = d_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
 
             global_step += 1
             step += 1
             if step % log_every == 0 or step == train_steps_per_epoch:
-                save_checkpoint(
-                    args.checkpoint_dir,
-                    epoch,
-                    step,
-                    generator,
-                    opt_gen,
-                    model_name="generator",  # pyright: ignore[reportUnknownArgumentType, reportAny]
-                )
-                save_checkpoint(
-                    args.checkpoint_dir,
-                    epoch,
-                    step,
-                    discriminator,
-                    opt_disc,
-                    model_name="discriminator",
-                )
-
                 d_log = {f"train/{k}": v for k, v in _to_float_dict(d_metrics).items()}  # pyright: ignore[reportAny]
                 g_log = {f"train/{k}": v for k, v in _to_float_dict(g_metrics).items()}  # pyright: ignore[reportAny]
                 log = {"epoch": epoch, "step": global_step} | d_log | g_log
@@ -373,6 +367,19 @@ def train(
                 )
                 if use_wandb:
                     wandb.log(log, step=global_step)
+
+        save_checkpoint(
+            args.checkpoint_dir,
+            generator,
+            opt_gen,
+            alt_name=f"generator_epoch_{epoch:03d}_gloss_{g_metrics['g_loss']:.03f}",
+        )
+        save_checkpoint(
+            args.checkpoint_dir,
+            discriminator,
+            opt_disc,
+            alt_name=f"discriminator_epoch_{epoch:03d}_dacc_{d_metrics['d_acc']:.03f}",
+        )
 
         # Accumulate averages across eval steps
         eval_sums = {}
@@ -512,9 +519,9 @@ if __name__ == "__main__":
 
     parser.add_argument("--batch-size", default=128)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--g-lr", type=float, default=1e-3)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--d-lr", type=float, default=2e-4)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--d-lr", type=float, default=2e-3)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta1", type=float, default=0.5)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--beta2", type=float, default=0.99)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--beta2", type=float, default=0.999)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--n-critic", type=int, default=5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--transform-name", default="signed_log1p")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--epochs", default=100)  # pyright: ignore[reportUnusedCallResult]

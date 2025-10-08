@@ -50,10 +50,10 @@ def make_transform(
 
 def save_checkpoint(
     checkpoint_dir: str,
-    epoch: int,
-    step: int,
-    model: nnx.Module,
-    optimizer: nnx.Optimizer,  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType],
+    epoch: int = 0,
+    step: int = 0,
+    model: nnx.Module | None = None,
+    optimizer: nnx.Optimizer | None = None,  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType],
     model_name: str | None = None,
     alt_name: str | None = None,
 ) -> None:
