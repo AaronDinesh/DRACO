@@ -13,3 +13,4 @@ wheels/
 .venv
 data/
 wandb/
+logs/
