@@ -1,4 +1,4 @@
-image = "${STORE}/ce-images/ska-gan-jax-25.08.sqsh"
+image = "${STORE}/ce-images/ska-gan-jax-25.01.sqsh"
 
 mounts = [
     "/capstor",

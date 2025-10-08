@@ -518,8 +518,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("Training Script")
 
     parser.add_argument("--batch-size", default=128)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--g-lr", type=float, default=1e-3)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--d-lr", type=float, default=2e-3)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--g-lr", type=float, default=1e-4)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--d-lr", type=float, default=2e-4)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta1", type=float, default=0.5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta2", type=float, default=0.999)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--n-critic", type=int, default=5)  # pyright: ignore[reportUnusedCallResult]
