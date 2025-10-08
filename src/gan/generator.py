@@ -110,9 +110,9 @@ class Generator(nnx.Module):
         ]
 
         self.upsample_blocks: list[upsample] = [
-            upsample(keys[8], in_features=512, out_features=512, size=(4, 4)),
-            upsample(keys[9], in_features=1024, out_features=512, size=(4, 4)),
-            upsample(keys[10], in_features=1024, out_features=512, size=(4, 4)),
+            upsample(keys[8], in_features=512, out_features=512, size=(4, 4), apply_Dropout=False),
+            upsample(keys[9], in_features=1024, out_features=512, size=(4, 4), apply_Dropout=False),
+            upsample(keys[10], in_features=1024, out_features=512, size=(4, 4), apply_Dropout=False),
             upsample(keys[11], in_features=1024, out_features=512, size=(4, 4), apply_Dropout=False),
             upsample(keys[12], in_features=1024, out_features=256, size=(4, 4), apply_Dropout=False),
             upsample(keys[13], in_features=512, out_features=128, size=(4, 4), apply_Dropout=False),
@@ -161,4 +161,4 @@ class Generator(nnx.Module):
             x = jnp.concatenate([skip, x], axis=-1)  # concat along channels (NHWC)
 
         x = self.upsample_blocks[-1](x, is_training)
-        return self.output_stage(x)
+        return nnx.relu(self.output_stage(x))

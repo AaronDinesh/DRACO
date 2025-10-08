@@ -345,7 +345,7 @@ def train(
             total=train_steps_per_epoch,
             leave=False,
             position=1,
-            desc="Running Training Batch",
+            desc=f"Epoch: {epoch:03d} - Training Batch",
         ):
             g_metrics = g_step(generator, opt_gen, discriminator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
 
@@ -359,7 +359,7 @@ def train(
                 g_log = {f"train/{k}": v for k, v in _to_float_dict(g_metrics).items()}  # pyright: ignore[reportAny]
                 log = {"epoch": epoch, "step": global_step} | d_log | g_log
                 print(
-                    f"\n[Epoch {epoch:02d} Step {step:04d}] "
+                    f"\n[Epoch {epoch:03d} Step {step:04d}] "
                     + f"d_loss={d_log.get('train/d_loss', 0.0):.4f} "
                     + f"d_acc={d_log.get('train/d_acc', 0.0):.3f} "
                     + f"| g_loss={g_log.get('train/g_loss', 0.0):.4f} "
@@ -391,7 +391,7 @@ def train(
             total=eval_steps_per_epoch,
             leave=False,
             position=1,
-            desc="Running Eval Batch",
+            desc=f"Epoch {epoch:03d} - Running Eval Batch",
         ):
             metrics = eval_step(discriminator, generator, batch, l1_lambda=0.0)  # pyright: ignore[reportAny, reportUnknownArgumentType]
             if first_fake is None:
@@ -518,8 +518,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("Training Script")
 
     parser.add_argument("--batch-size", default=128)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--g-lr", type=float, default=1e-4)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--d-lr", type=float, default=2e-4)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--g-lr", type=float, default=2e-4)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--d-lr", type=float, default=1e-4)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta1", type=float, default=0.5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta2", type=float, default=0.999)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--n-critic", type=int, default=5)  # pyright: ignore[reportUnusedCallResult]
