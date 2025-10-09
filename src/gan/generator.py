@@ -13,8 +13,8 @@ class FiLM(nnx.Module):
 
     def __call__(self, input: jnp.ndarray, condition_param: jnp.ndarray) -> jnp.ndarray:
         # This is because my tensor is of shape (B, H, W, C)
-        gamma = self.gamma(condition_param)[:, None, None, :]
-        beta = self.beta(condition_param)[:, None, None, :]
+        gamma = 0.1 * jnp.tanh(self.gamma(condition_param)[:, None, None, :])
+        beta = 0.1 * jnp.tanh(self.beta(condition_param)[:, None, None, :])
         return input * (1.0 + gamma) + beta
 
 
@@ -161,4 +161,4 @@ class Generator(nnx.Module):
             x = jnp.concatenate([skip, x], axis=-1)  # concat along channels (NHWC)
 
         x = self.upsample_blocks[-1](x, is_training)
-        return nnx.relu(self.output_stage(x))
+        return self.output_stage(x)

@@ -33,7 +33,7 @@ def make_train_test_loaders(
     csv_path: str,
     test_ratio: float = 0.2,
     transform_name: TransformName = "signed_log1p",
-) -> tuple[Loader, Loader, int, int, int, int]:
+):
     input_maps = jnp.load(input_data_path, mmap_mode="r")
     output_maps = jnp.load(output_data_path, mmap_mode="r")
     cosmos_params = pd.read_csv(csv_path, header=None, sep=" ")
@@ -60,10 +60,17 @@ def make_train_test_loaders(
     test_idx = random_shuffle[:n_test]
     train_idx = random_shuffle[n_test:]
 
+    # after train_idx/test_idx are defined
+    mu = jnp.mean(cosmos_params[train_idx], axis=0)
+    sigma = jnp.std(cosmos_params[train_idx], axis=0) + 1e-6
+
     forward_transform, _ = make_transform(name=transform_name)
 
     # This ensures that there is no data leakage
     assert len(jnp.intersect1d(train_idx, test_idx)) == 0
+
+    def _standardize_params(x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
+        return (x - mu) / sigma
 
     def _add_channel_last(x: jnp.ndarray):
         # x is (N,H,W) or (N,H,W,C); return (N,H,W,1) or (N,H,W,C)
@@ -84,7 +91,7 @@ def make_train_test_loaders(
             yield {
                 "inputs": forward_transform(_add_channel_last(input_maps[batch])),
                 "targets": forward_transform(_add_channel_last(output_maps[batch])),
-                "params": cosmos_params[batch],
+                "params": _standardize_params(cosmos_params[batch], mu=mu, sigma=sigma),
             }
 
     def train_loader(key: Array | None = None, drop_last: bool = False):
@@ -100,6 +107,8 @@ def make_train_test_loaders(
         len(test_idx),
         input_maps[0].shape[1],
         cosmos_params[0].shape[0],
+        mu,
+        sigma,
     )
 
 
@@ -347,10 +356,16 @@ def train(
             position=1,
             desc=f"Epoch: {epoch:03d} - Training Batch",
         ):
-            g_metrics = g_step(generator, opt_gen, discriminator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
+            d_metrics = d_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
 
             if (step % args.n_critic) == 0:
-                d_metrics = d_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
+                g_metrics = g_step(
+                    generator,  # pyright: ignore[reportUnknownArgumentType]
+                    opt_gen,  # pyright: ignore[reportUnknownArgumentType]
+                    discriminator,  # pyright: ignore[reportUnknownArgumentType]
+                    batch,  # pyright: ignore[reportUnknownArgumentType]
+                    l1_lambda=args.l1_lambda,  # pyright: ignore[reportAny]
+                )
 
             global_step += 1
             step += 1
@@ -393,7 +408,7 @@ def train(
             position=1,
             desc=f"Epoch {epoch:03d} - Running Eval Batch",
         ):
-            metrics = eval_step(discriminator, generator, batch, l1_lambda=0.0)  # pyright: ignore[reportAny, reportUnknownArgumentType]
+            metrics = eval_step(discriminator, generator, batch, l1_lambda=args.l1_lambda)  # pyright: ignore[reportAny, reportUnknownArgumentType]
             if first_fake is None:
                 first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
                 first_batch = batch
@@ -523,6 +538,7 @@ if __name__ == "__main__":
     parser.add_argument("--beta1", type=float, default=0.5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta2", type=float, default=0.999)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--n-critic", type=int, default=5)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--l1-lambda", type=float, default=50)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--transform-name", default="signed_log1p")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--epochs", default=100)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--log-rate", default=5)  # pyright: ignore[reportUnusedCallResult]
