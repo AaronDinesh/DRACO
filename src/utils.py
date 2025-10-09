@@ -80,4 +80,4 @@ def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.O
     checkpoint = _STD_CHKPTR.restore(checkpoint_path)  # pyright: ignore[reportAny]
 
     nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
-    nnx.update(optimizer, checkpoint["optimizer"])  # pyright: ignore[reportUnknownMemberType]
+    nnx.update(optimizer, checkpoint["opt_state"])  # pyright: ignore[reportUnknownMemberType]
