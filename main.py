@@ -69,7 +69,9 @@ def make_train_test_loaders(
     # This ensures that there is no data leakage
     assert len(jnp.intersect1d(train_idx, test_idx)) == 0
 
-    def _standardize_params(x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
+    def _standardize_params(
+        x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray
+    ) -> jnp.ndarray:
         return (x - mu) / sigma
 
     def _add_channel_last(x: jnp.ndarray):
@@ -187,7 +189,12 @@ def g_step(
         # "accuracy" proxy for G: how often D predicts fake as real
         g_trick_acc = (logits_fake > 0.0).mean()
 
-        metrics = {"g_loss": g_loss, "g_adv": adv, "g_l1": rec, "g_trick_acc": g_trick_acc}
+        metrics = {
+            "g_loss": g_loss,
+            "g_adv": adv,
+            "g_l1": rec,
+            "g_trick_acc": g_trick_acc,
+        }
         return g_loss, metrics
 
     (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(gen, disc)
@@ -284,8 +291,12 @@ def _wandb_images(
 
     imgs = []
     for i in range(min(max_items, inputs.shape[0])):
-        imgs.append(wandb.Image(_to_uint8_linear(inputs[i]), caption=f"inputs[{i}] lin"))
-        imgs.append(wandb.Image(_to_uint8_linear(targets[i]), caption=f"target[{i}] lin"))
+        imgs.append(
+            wandb.Image(_to_uint8_linear(inputs[i]), caption=f"inputs[{i}] lin")
+        )
+        imgs.append(
+            wandb.Image(_to_uint8_linear(targets[i]), caption=f"target[{i}] lin")
+        )
         imgs.append(wandb.Image(_to_uint8_linear(fake[i]), caption=f"fake[{i}] lin"))
     return imgs
 
@@ -308,9 +319,13 @@ def train(
     data_key: Array,
     use_wandb: bool,
     args: argparse.Namespace,
+    **kwargs,
 ) -> None:
     train_steps_per_epoch = math.ceil(n_train / batch_size)
     eval_steps_per_epoch = math.ceil(n_test / batch_size)
+
+    cosmos_params_mu = kwargs["cosmos_params_mu"]
+    cosmos_params_sigma = kwargs["cosmos_params_sigma"]
 
     best_disc_acc: float = 0.0
     best_gan_loss: float = jnp.inf
@@ -331,10 +346,15 @@ def train(
                 beta1=args.beta1,  # pyright: ignore[reportAny]
                 beta2=args.beta2,  # pyright: ignore[reportAny]
                 n_critic=args.n_critic,  # pyright: ignore[reportAny]
+                l1_lambda=args.l1_lambda,
+                epochs=args.epochs,
+                transform_name=args.transform_name,
                 img_size=img_size,
                 cond_dim=cosmos_params_len,
                 train_steps=train_steps_per_epoch,
                 eval_steps=eval_steps_per_epoch,
+                cosmos_params_mu=cosmos_params_mu,
+                cosmos_params_sigma=cosmos_params_sigma,
             ),
         )
 
@@ -342,7 +362,11 @@ def train(
 
     global_step = 0
     for epoch in tqdm(
-        range(1, num_epochs + 1), total=num_epochs, leave=False, position=0, desc="Running Epoch"
+        range(1, num_epochs + 1),
+        total=num_epochs,
+        leave=False,
+        position=0,
+        desc="Running Epoch",
     ):
         # ---------------- TRAIN ----------------
         step = 0
@@ -408,7 +432,9 @@ def train(
             position=1,
             desc=f"Epoch {epoch:03d} - Running Eval Batch",
         ):
-            metrics = eval_step(discriminator, generator, batch, l1_lambda=args.l1_lambda)  # pyright: ignore[reportAny, reportUnknownArgumentType]
+            metrics = eval_step(
+                discriminator, generator, batch, l1_lambda=args.l1_lambda
+            )  # pyright: ignore[reportAny, reportUnknownArgumentType]
             if first_fake is None:
                 first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
                 first_batch = batch
@@ -469,15 +495,22 @@ def main(parser: argparse.ArgumentParser):
     gen_key, disc_key, data_key, train_test_key = random.split(master_key, 4)  # pyright: ignore[reportAny]
 
     print("----- Creating Dataset Loaders -----")
-    train_loader, test_loader, n_train, n_test, img_size, cosmos_params_len = (
-        make_train_test_loaders(
-            key=train_test_key,  # pyright: ignore[reportAny]
-            batch_size=args.batch_size,  # pyright: ignore[reportAny]
-            input_data_path=args.input_maps,  # pyright: ignore[reportAny]
-            output_data_path=args.output_maps,  # pyright: ignore[reportAny]
-            csv_path=args.cosmos_params,  # pyright: ignore[reportAny]
-            transform_name=args.transform_name,  # pyright: ignore[reportAny]
-        )
+    (
+        train_loader,
+        test_loader,
+        n_train,
+        n_test,
+        img_size,
+        cosmos_params_len,
+        cosmos_params_mu,
+        cosmos_params_sigma,
+    ) = make_train_test_loaders(
+        key=train_test_key,  # pyright: ignore[reportUnknownArgumentType]
+        batch_size=args.batch_size,  # pyright: ignore[reportAny]
+        input_data_path=args.input_maps,  # pyright: ignore[reportAny]
+        output_data_path=args.output_maps,  # pyright: ignore[reportAny]
+        csv_path=args.cosmos_params,  # pyright: ignore[reportAny]
+        transform_name=args.transform_name,  # pyright: ignore[reportAny]
     )
 
     print("----- Creating Generator -----")
@@ -526,6 +559,8 @@ def main(parser: argparse.ArgumentParser):
         data_key=data_key,  # pyright: ignore[reportAny]
         use_wandb=args.use_wandb,  # pyright: ignore[reportAny]
         args=args,
+        cosmos_params_mu=cosmos_params_mu,
+        cosmos_params_sigma=cosmos_params_sigma,
     )
 
 
@@ -538,9 +573,9 @@ if __name__ == "__main__":
     parser.add_argument("--beta1", type=float, default=0.5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--beta2", type=float, default=0.999)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--n-critic", type=int, default=5)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--l1-lambda", type=float, default=50)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--l1-lambda", type=float, default=1e-2)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--transform-name", default="signed_log1p")  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--epochs", default=100)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--epochs", default=30)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--log-rate", default=5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--input-maps")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--output-maps")  # pyright: ignore[reportUnusedCallResult]
@@ -549,6 +584,6 @@ if __name__ == "__main__":
     parser.add_argument("--img-channels", default=1)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--use-wandb", action="store_true", default=True)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--wandb-proj-name", default="DRACO")  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--wandb-run-name", default="nnx-cgan-256-run-2")  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--wandb-run-name", default="nnx-cgan-256-run-4")  # pyright: ignore[reportUnusedCallResult]
 
     main(parser)

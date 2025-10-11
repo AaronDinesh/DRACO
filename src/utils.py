@@ -56,6 +56,7 @@ def save_checkpoint(
     optimizer: nnx.Optimizer | None = None,  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType],
     model_name: str | None = None,
     alt_name: str | None = None,
+    data_stats=None,
 ) -> None:
     ckpt_dir = Path(checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -68,6 +69,9 @@ def save_checkpoint(
         "opt_state": opt_state,
     }
 
+    if data_stats is not None:
+        payload["data_stats"] = data_stats  # <— NEW
+
     if alt_name is None:
         save_path = ckpt_dir / f"{model_name}_epoch_{epoch:07d}_step_{step:07d}"
     else:
@@ -77,7 +81,9 @@ def save_checkpoint(
 
 
 def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer):  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
-    checkpoint = _STD_CHKPTR.restore(checkpoint_path)  # pyright: ignore[reportAny]
+    checkpoint = _STD_CHKPTR.restore(checkpoint_path)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
     nnx.update(optimizer, checkpoint["opt_state"])  # pyright: ignore[reportUnknownMemberType]
+
+    return checkpoint.get("data_stats", None)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
