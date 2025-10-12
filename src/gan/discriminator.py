@@ -106,8 +106,13 @@ class SpectralNorm(nnx.Module):
 
         return sigma, u
 
-    def __call__(self, *args, **kwargs):
-        """Forward pass with spectral normalization applied."""
+    def __call__(self, *args, is_training: bool = True, **kwargs):
+        """Forward pass with spectral normalization applied.
+
+        Args:
+            training: If True, compute and update spectral norm. If False,
+                use cached spectral norm from training.
+        """
         # Get the weight parameter
         if hasattr(self.module, "kernel"):
             weight_param = self.module.kernel
@@ -116,10 +121,16 @@ class SpectralNorm(nnx.Module):
 
         original_weight = weight_param.value
 
-        # Compute spectral norm and normalize weights
-        sigma, _ = self._compute_spectral_norm(
-            original_weight, update_u=not nnx.is_initializing()
-        )
+        # During training: compute spectral norm and update u
+        # During inference: use cached u vector without updating
+        if is_training:
+            sigma, _ = self._compute_spectral_norm(
+                original_weight, update_u=not nnx.is_initializing()
+            )
+        else:
+            # Use cached u vector for inference (no updates)
+            sigma, _ = self._compute_spectral_norm(original_weight, update_u=False)
+
         normalized_weight = original_weight / (sigma + self.eps)
 
         # Temporarily replace the weight
