@@ -13,109 +13,126 @@ Kind = Tuple[
 
 
 class SpectralNorm(nnx.Module):
-    """
-    Spectral Normalization wrapper for nnx.Linear / nnx.Conv.
-    - Keeps (u, v) as nnx state.
-    - Uses reparameterization: W̄ = W / σ(W) for the forward pass.
-    - Updates (u, v) via power iteration during training.
-    """
+    """Spectral Normalization wrapper for NNX modules.
 
-    layer: Layer
-    iters: int
-    eps: float
-    _kind: Kind
-    u: nnx.Variable  # state: Array[o]
-    v: nnx.Variable  # state: Array[k]
+    Applies spectral normalization to the weight matrix of wrapped modules
+    (e.g., Linear, Conv) by dividing weights by their largest singular value,
+    approximated via power iteration.
+
+    Args:
+        module: The NNX module to wrap (e.g., nnx.Linear, nnx.Conv)
+        n_power_iterations: Number of power iterations for approximating
+            the spectral norm (default: 1)
+        eps: Small constant for numerical stability (default: 1e-12)
+
+    Example:
+        >>> # Wrap a Linear layer
+        >>> linear = nnx.Linear(128, 64, rngs=nnx.Rngs(0))
+        >>> sn_linear = SpectralNorm(linear, rngs=nnx.Rngs(1))
+        >>>
+        >>> # Wrap a Conv layer
+        >>> conv = nnx.Conv(3, 64, kernel_size=(3, 3), rngs=nnx.Rngs(0))
+        >>> sn_conv = SpectralNorm(conv, rngs=nnx.Rngs(2), n_power_iterations=3)
+    """
 
     def __init__(
         self,
-        layer: Layer,
+        module: nnx.Module,
         *,
-        iters: int = 10,
-        eps: float = 1e-12,
-        warmup: int = 15,
         rngs: nnx.Rngs,
+        n_power_iterations: int = 1,
+        eps: float = 1e-12,
     ):
-        self.layer = layer
-        self.iters = int(iters)
-        self.eps = float(eps)
+        self.module = module
+        self.n_power_iterations = n_power_iterations
+        self.eps = eps
 
-        # Flatten kernel to (out, in)
-        k = layer.kernel
-        if k.ndim == 2:  # Linear: (in, out) -> (out, in)
-            W2d: Array = k.T
-            self._kind = ("linear", tuple(k.shape))  # (in, out)
-        else:  # Conv: (kh, kw, cin, cout) -> (out, kh*kw*cin)
-            kh, kw, cin, cout = k.shape
-            W2d = jnp.reshape(k, (kh * kw * cin, cout)).T
-            self._kind = ("conv", (kh, kw, cin, cout))
-
-        o, i = W2d.shape  # out_dim, in_dim
-        k1, k2 = rngs()
-        u: Array = random.normal(k1, (o,), dtype=W2d.dtype)
-        v: Array = random.normal(k2, (i,), dtype=W2d.dtype)
-
-        # Warmup power iterations (stabilize u,v)
-        for _ in range(int(warmup)):
-            v = (u @ W2d) / (jnp.linalg.norm(u @ W2d) + self.eps)
-            u = (W2d @ v) / (jnp.linalg.norm(W2d @ v) + self.eps)
-
-        self.u = nnx.Variable("state", u)
-        self.v = nnx.Variable("state", v)
-
-    def __call__(self, x: Array, *, training: bool = True) -> jnp.ndarray:
-        u: Array = self.u.value
-        v: Array = self.v.value
-
-        # Rebuild flattened weight (out, in)
-        k = self.layer.kernel
-        if self._kind[0] == "linear":
-            W2d: Array = k.T
+        # Get the weight parameter from the module
+        if hasattr(module, "kernel"):
+            weight = module.kernel.value
+        elif hasattr(module, "weight"):
+            weight = module.weight.value
         else:
-            kh, kw, cin, cout = self._kind[1]
-            W2d = jnp.reshape(k, (kh * kw * cin, cout)).T
+            raise ValueError("Module must have either 'kernel' or 'weight' attribute")
 
-        # Power iteration on stop-gradient weights
-        if training:
-            Wsg: Array = lax.stop_gradient(W2d)
-            for _ in range(self.iters):
-                v = (u @ Wsg) / (jnp.linalg.norm(u @ Wsg) + self.eps)
-                u = (Wsg @ v) / (jnp.linalg.norm(Wsg @ v) + self.eps)
-            self.u.value, self.v.value = u, v
+        # Reshape weight to 2D for spectral norm computation
+        self.weight_shape = weight.shape
+        weight_mat = self._reshape_weight(weight)
 
-        sigma: Array = jnp.einsum("o,ok,k->", u, W2d, v)  # scalar
-        Wbar2d: Array = W2d / (sigma + self.eps)
+        # Initialize u vector for power iteration
+        u_shape = (weight_mat.shape[0],)
+        u_init = jax.random.normal(rngs(), u_shape)
+        u_init = u_init / jnp.linalg.norm(u_init)
 
-        # Unflatten + forward
-        if self._kind[0] == "linear":
-            # Linear: Wbar (in, out)
-            Wbar: Array = Wbar2d.T
-            y: Array = jnp.tensordot(x, Wbar, axes=([-1], [0]))  # (..., in) @ (in, out)
-            if self.layer.bias is not None:
-                y = y + self.layer.bias
-            return y
+        self.u = nnx.Variable(u_init)
+
+    def _reshape_weight(self, weight: jnp.ndarray) -> jnp.ndarray:
+        """Reshape weight tensor to 2D matrix."""
+        if weight.ndim == 1:
+            return weight.reshape(1, -1)
         else:
-            kh, kw, cin, cout = self._kind[1]
-            Wbar = jnp.reshape(Wbar2d.T, (kh, kw, cin, cout))  # HWIO
+            return weight.reshape(weight.shape[0], -1)
 
-            # Ensure dilations are tuples (lax requires sequences)
-            lhs_dil: Tuple[int, int] = getattr(self.layer, "lhs_dilation", (1, 1))
-            rhs_dil: Tuple[int, int] = getattr(
-                self.layer, "kernel_dilation", getattr(self.layer, "dilation", (1, 1))
-            )
-            y = lax.conv_general_dilated(
-                lhs=x,
-                rhs=Wbar,
-                window_strides=self.layer.strides,  # Tuple[int, int]
-                padding=self.layer.padding,  # str | sequence
-                lhs_dilation=lhs_dil,
-                rhs_dilation=rhs_dil,
-                dimension_numbers=("NHWC", "HWIO", "NHWC"),
-                feature_group_count=getattr(self.layer, "feature_group_count", 1),
-            )
-            if self.layer.bias is not None:
-                y = y + self.layer.bias[None, None, None, :]
-            return y
+    def _compute_spectral_norm(
+        self, weight: jnp.ndarray, update_u: bool = True
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Compute spectral norm using power iteration.
+
+        Args:
+            weight: Weight matrix (2D)
+            update_u: Whether to update the u vector
+
+        Returns:
+            Tuple of (sigma, u) where sigma is the spectral norm
+        """
+        weight_mat = self._reshape_weight(weight)
+        u = self.u.value
+
+        # Power iteration
+        for _ in range(self.n_power_iterations):
+            # v = W^T u / ||W^T u||
+            v = jnp.matmul(weight_mat.T, u)
+            v = v / (jnp.linalg.norm(v) + self.eps)
+
+            # u = W v / ||W v||
+            u = jnp.matmul(weight_mat, v)
+            u = u / (jnp.linalg.norm(u) + self.eps)
+
+        # Compute spectral norm: sigma = u^T W v
+        sigma = jnp.dot(u, jnp.matmul(weight_mat, v))
+
+        if update_u:
+            self.u.value = u
+
+        return sigma, u
+
+    def __call__(self, *args, **kwargs):
+        """Forward pass with spectral normalization applied."""
+        # Get the weight parameter
+        if hasattr(self.module, "kernel"):
+            weight_param = self.module.kernel
+        else:
+            weight_param = self.module.weight
+
+        original_weight = weight_param.value
+
+        # Compute spectral norm and normalize weights
+        sigma, _ = self._compute_spectral_norm(
+            original_weight, update_u=not nnx.is_initializing()
+        )
+        normalized_weight = original_weight / (sigma + self.eps)
+
+        # Temporarily replace the weight
+        weight_param.value = normalized_weight
+
+        try:
+            # Forward pass through wrapped module
+            output = self.module(*args, **kwargs)
+        finally:
+            # Restore original weight
+            weight_param.value = original_weight
+
+        return output
 
 
 class Discriminator(nnx.Module):
@@ -150,7 +167,7 @@ class Discriminator(nnx.Module):
         )
 
         self.conv1: SpectralNorm = SpectralNorm(
-            nnx.Conv(
+            module=nnx.Conv(
                 in_features=2 * in_channels + condition_proj_dim,
                 out_features=base_conv_dim,
                 strides=2,
@@ -158,12 +175,12 @@ class Discriminator(nnx.Module):
                 padding="SAME",
                 rngs=nnx.Rngs(conv1_key),
             ),
-            iters=1,
+            n_power_iterations=1,
             rngs=nnx.Rngs(conv1_key),
         )
 
         self.conv2: SpectralNorm = SpectralNorm(
-            nnx.Conv(
+            module=nnx.Conv(
                 in_features=base_conv_dim,
                 out_features=base_conv_dim * 2,
                 strides=2,
@@ -171,12 +188,12 @@ class Discriminator(nnx.Module):
                 padding="SAME",
                 rngs=nnx.Rngs(conv2_key),
             ),
-            iters=1,
+            n_power_iterations=1,
             rngs=nnx.Rngs(conv2_key),
         )
 
         self.conv3: SpectralNorm = SpectralNorm(
-            nnx.Conv(
+            module=nnx.Conv(
                 in_features=base_conv_dim * 2,
                 out_features=base_conv_dim * 4,
                 strides=2,
@@ -184,12 +201,12 @@ class Discriminator(nnx.Module):
                 padding="SAME",
                 rngs=nnx.Rngs(conv3_key),
             ),
-            iters=1,
+            n_power_iterations=1,
             rngs=nnx.Rngs(conv3_key),
         )
 
         self.conv4: SpectralNorm = SpectralNorm(
-            nnx.Conv(
+            module=nnx.Conv(
                 in_features=base_conv_dim * 4,
                 out_features=1,
                 strides=1,
@@ -197,7 +214,7 @@ class Discriminator(nnx.Module):
                 padding="SAME",
                 rngs=nnx.Rngs(conv4_key),
             ),
-            iters=1,
+            n_power_iterations=1,
             rngs=nnx.Rngs(conv4_key),
         )
         self.condition_proj_dim = condition_proj_dim
@@ -212,7 +229,9 @@ class Discriminator(nnx.Module):
         (batch, height, width, _) = inputs.shape
 
         # Project and turn in into [B, 1, 1, condition_proj_dim]
-        condition_params_proj = self.condition_projection(condition_params)[:, None, None, :]
+        condition_params_proj = self.condition_projection(condition_params)[
+            :, None, None, :
+        ]
 
         condition_params_proj = jnp.broadcast_to(
             condition_params_proj, (batch, height, width, self.condition_proj_dim)
@@ -220,9 +239,9 @@ class Discriminator(nnx.Module):
 
         out = jnp.concatenate([inputs, output, condition_params_proj], axis=-1)
 
-        out = nnx.leaky_relu(self.conv1(out, training=is_training), 0.2)
-        out = nnx.leaky_relu(self.conv2(out, training=is_training), 0.2)
-        out = nnx.leaky_relu(self.conv3(out, training=is_training), 0.2)
+        out = nnx.leaky_relu(self.conv1(x=out, training=is_training), 0.2)
+        out = nnx.leaky_relu(self.conv2(x=out, training=is_training), 0.2)
+        out = nnx.leaky_relu(self.conv3(x=out, training=is_training), 0.2)
         logits = self.conv4(out, training=is_training)
 
         return logits
