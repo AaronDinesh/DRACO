@@ -120,10 +120,10 @@ class SpectralNorm(nnx.Module):
 
 class Discriminator(nnx.Module):
     condition_projection: nnx.Linear
-    conv_1: SpectralNorm
-    conv_2: SpectralNorm
-    conv_3: SpectralNorm
-    conv_4: SpectralNorm
+    conv1: SpectralNorm
+    conv2: SpectralNorm
+    conv3: SpectralNorm
+    conv4: SpectralNorm
     condition_dimension: int
     condition_proj_dim: int
 
@@ -158,7 +158,7 @@ class Discriminator(nnx.Module):
                 padding="SAME",
                 rngs=nnx.Rngs(conv1_key),
             ),
-            iters=10,
+            iters=1,
             rngs=nnx.Rngs(conv1_key),
         )
 
@@ -171,7 +171,7 @@ class Discriminator(nnx.Module):
                 padding="SAME",
                 rngs=nnx.Rngs(conv2_key),
             ),
-            iters=10,
+            iters=1,
             rngs=nnx.Rngs(conv2_key),
         )
 
@@ -184,7 +184,7 @@ class Discriminator(nnx.Module):
                 padding="SAME",
                 rngs=nnx.Rngs(conv3_key),
             ),
-            iters=10,
+            iters=1,
             rngs=nnx.Rngs(conv3_key),
         )
 
@@ -197,7 +197,7 @@ class Discriminator(nnx.Module):
                 padding="SAME",
                 rngs=nnx.Rngs(conv4_key),
             ),
-            iters=10,
+            iters=1,
             rngs=nnx.Rngs(conv4_key),
         )
         self.condition_proj_dim = condition_proj_dim
@@ -212,7 +212,7 @@ class Discriminator(nnx.Module):
         (batch, height, width, _) = inputs.shape
 
         # Project and turn in into [B, 1, 1, condition_proj_dim]
-        condition_params_proj = self.condition_projection(condition_params)[:None, None, :]
+        condition_params_proj = self.condition_projection(condition_params)[:, None, None, :]
 
         condition_params_proj = jnp.broadcast_to(
             condition_params_proj, (batch, height, width, self.condition_proj_dim)

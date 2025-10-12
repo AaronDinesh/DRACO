@@ -116,7 +116,7 @@ class Generator(nnx.Module):
 
         # fmt: off
         self.downsample_blocks: list[downsample_block] = [
-            downsample_block(keys[0], in_features=in_features, out_features=64, size=(4, 4)),
+            downsample_block(keys[0], in_features=in_features, out_features=64, size=(4, 4), apply_groupnorm=False),
             downsample_block(keys[1], in_features=64, out_features=128,  size=(4, 4)),
             downsample_block(keys[2], in_features=128, out_features=256, size=(4, 4)),
             downsample_block(keys[3], in_features=256, out_features=512, size=(4, 4)),
@@ -134,7 +134,7 @@ class Generator(nnx.Module):
             upsample_block(keys[12], in_features=1024, out_features=256, kernel_size=(4, 4)),
             upsample_block(keys[13], in_features=512, out_features=128, kernel_size=(4, 4)),
             upsample_block(keys[14], in_features=256, out_features=64, kernel_size=(4, 4)),
-            upsample_block(keys[15], in_features=128, out_features=4, kernel_size=(4, 4)),
+            upsample_block(keys[15], in_features=128, out_features=4, kernel_size=(4, 4), apply_groupnorm=False),
         ]
         # fmt: on
         self.skip_connection_conditioners: list[FiLM] = [
