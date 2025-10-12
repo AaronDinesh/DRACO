@@ -344,7 +344,7 @@ def train(
         test_key = random.fold_in(test_key, epoch)
 
         for batch in tqdm(  # pyright: ignore[reportUnknownVariableType]
-            train_loader(key=train_key, drop_last=False),  # pyright: ignore[reportUnknownArgumentType, reportCallIssue]
+            train_loader(key=train_key, drop_last=True),  # pyright: ignore[reportUnknownArgumentType, reportCallIssue]
             total=train_steps_per_epoch,
             leave=False,
             position=1,
@@ -396,7 +396,7 @@ def train(
         first_batch = None
 
         for batch in tqdm(
-            test_loader(key=test_key, drop_last=False),
+            test_loader(key=test_key, drop_last=True),
             total=eval_steps_per_epoch,
             leave=False,
             position=1,
