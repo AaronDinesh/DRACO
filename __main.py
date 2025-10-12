@@ -16,9 +16,13 @@ from tqdm.auto import tqdm
 
 import src
 import wandb
-from src import Discriminator, Generator
 from src.typing import Batch, Loader, TransformName
 from src.utils import make_transform, restore_checkpoint, save_checkpoint
+
+
+def avg_pool_2x(x: jnp.ndarray) -> jnp.ndarray:
+    """2x2 average pooling with stride 2 for NHWC images."""
+    return nnx.avg_pool(inputs=x, window_shape=(2, 2), strides=(2, 2), padding="SAME")
 
 
 def make_train_test_loaders(
@@ -34,7 +38,7 @@ def make_train_test_loaders(
     output_maps = jnp.load(output_data_path, mmap_mode="r")
     cosmos_params = pd.read_csv(csv_path, header=None, sep=" ")
 
-    repeat_factor: int = input_maps.shape[0] // len(cosmos_params)
+    repeat_factor: int = input_maps.shape[0] // len(cosmos_params)  # pyright: ignore[reportUnknownMemberType]
     # fmt: off
     cosmos_params = cosmos_params.loc[cosmos_params.index.repeat(repeat_factor)].reset_index(drop=True)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     # fmt: on
@@ -108,119 +112,140 @@ def make_train_test_loaders(
     )
 
 
-def d_hinge_loss(
-    real_logits: jnp.ndarray, fake_logits: jnp.ndarray
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    real_loss = jnp.maximum(0.0, 1.0 - real_logits)
-    fake_loss = jnp.maximum(0.0, 1.0 + fake_logits)
-    return (jnp.mean(real_loss) + jnp.mean(fake_loss), real_loss, fake_loss)
+def bce_with_logits(logits: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
+    """Mean BCE with logits."""
+    return optax.sigmoid_binary_cross_entropy(logits, labels).mean()
 
 
-def g_hinge_l1_loss(
-    fake_logits: jnp.ndarray, y_fake: jnp.ndarray, y_real: jnp.ndarray, l1_lambda: float = 100.0
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    adversarial = -jnp.mean(fake_logits)
-    reconstruction_loss = jnp.mean(jnp.abs(y_real - y_fake))
-    return (adversarial + l1_lambda * reconstruction_loss, adversarial, reconstruction_loss)
-
-
-def disc_step(
-    disc: Discriminator, opt_disc, gen: Generator, batch: dict[str, jnp.ndarray]
+@nnx.jit
+def d_step(
+    disc,
+    opt_disc,
+    gen,
+    batch: dict[str, jnp.ndarray],
 ) -> dict[str, jnp.ndarray]:
     inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
-    def loss_fn(disc: Discriminator, gen: Generator) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
-        out_real_logits = disc(
-            inputs=inputs, output=targets, condition_params=cosmos_params, is_training=True
-        )
+    def loss_fn(disc, gen) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+        # Real
+        real256 = targets
+        real128 = avg_pool_2x(real256)
+        out_real = disc(real256, real128, cosmos_params, is_training=True)
+        logits_real = out_real["logits"]  # [B]
 
-        out_fake_logits = gen(inputs, cosmos_params)
-        out_fake_logits = jax.lax.stop_gradient(out_fake_logits)
+        # Fake (stopgrad on G)
+        fake256 = gen(inputs, cosmos_params, is_training=True)
+        fake256 = jax.lax.stop_gradient(fake256)
+        fake128 = avg_pool_2x(fake256)
+        out_fake = disc(fake256, fake128, cosmos_params, is_training=True)
+        logits_fake = out_fake["logits"]
 
-        disc_loss, _, _ = d_hinge_loss(out_real_logits, out_fake_logits)
+        loss_real = bce_with_logits(logits_real, jnp.ones_like(logits_real))
+        loss_fake = bce_with_logits(logits_fake, jnp.zeros_like(logits_fake))
+        d_loss = loss_real + loss_fake
 
-        disc_real_accuracy = jnp.mean(out_real_logits > 0.0)
-        disc_fake_accuracy = jnp.mean(out_fake_logits < 0.0)
-
-        avg_disc_accuracy = (disc_real_accuracy + disc_fake_accuracy) * 0.5
+        # accuracies for D
+        d_real_acc = (logits_real > 0.0).mean()
+        d_fake_acc = (logits_fake < 0.0).mean()
+        d_acc = 0.5 * (d_real_acc + d_fake_acc)
 
         metrics = {
-            "d_loss": disc_loss,
-            "d_real_acc": disc_real_accuracy,
-            "d_fake_acc": disc_fake_accuracy,
-            "d_acc": avg_disc_accuracy,
+            "d_loss": d_loss,
+            "d_real_acc": d_real_acc,
+            "d_fake_acc": d_fake_acc,
+            "d_acc": d_acc,
+            "D_real": jax.nn.sigmoid(logits_real).mean(),
+            "D_fake": jax.nn.sigmoid(logits_fake).mean(),
         }
-
-        return disc_loss, metrics
+        return d_loss, metrics
 
     (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(disc, gen)
     opt_disc.update(model=disc, grads=grads)
     return metrics
 
 
-def gen_step(
-    gen: Generator,
+@nnx.jit
+def g_step(
+    gen,
     opt_gen,
-    disc: Discriminator,
+    disc,
     batch: dict[str, jnp.ndarray],
-    l1_lambda: float = 100.0,
+    l1_lambda: float = 0.0,  # set >0 for pix2pix-like reconstruction
 ) -> dict[str, jnp.ndarray]:
     inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
-    def loss_fn(gen: Generator, disc: Discriminator) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
-        fake_images = gen(inputs, cosmos_params)
-        out_fake_logits = disc(
-            inputs=inputs, output=targets, condition_params=cosmos_params, is_training=True
-        )
+    def loss_fn(gen, disc) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+        fake256 = gen(inputs, cosmos_params, is_training=True)
+        fake128 = avg_pool_2x(fake256)
+        out_fake = disc(fake256, fake128, cosmos_params, is_training=True)
+        logits_fake = out_fake["logits"]
 
-        gen_loss, adversarial_loss, reconstruction_loss = g_hinge_l1_loss(
-            out_fake_logits, fake_images, targets, l1_lambda
-        )
+        adv = bce_with_logits(logits_fake, jnp.ones_like(logits_fake))
+        rec = jnp.mean(jnp.abs(fake256 - targets))
+        g_loss = adv + l1_lambda * rec
 
-        g_trick_acc = (out_fake_logits > 0.0).mean()
+        # "accuracy" proxy for G: how often D predicts fake as real
+        g_trick_acc = (logits_fake > 0.0).mean()
 
         metrics = {
-            "g_loss": gen_loss,
-            "g_adversarial": adversarial_loss,
-            "g_reconstruct": reconstruction_loss,
+            "g_loss": g_loss,
+            "g_adv": adv,
+            "g_l1": rec,
             "g_trick_acc": g_trick_acc,
         }
-        return gen_loss, metrics
+        return g_loss, metrics
 
     (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(gen, disc)
     opt_gen.update(model=gen, grads=grads)
     return metrics
 
 
+@nnx.jit
 def eval_step(
-    disc: Discriminator, gen: Generator, batch: dict[str, jnp.ndarray], l1_lambda: float = 100.0
+    disc: src.Discriminator,
+    gen: src.Generator,
+    batch: dict[str, jnp.ndarray],
+    l1_lambda: float = 0.0,
 ) -> dict[str, jnp.ndarray]:
     inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
-    out_real_logits = disc(inputs=inputs, output=targets, condition_params=cosmos_params)
-    fake_images = gen(inputs, cosmos_params)
-    out_fake_logits = disc(inputs=fake_images, output=targets, condition_params=cosmos_params)
+    # Real branch
+    real256 = targets
+    real128 = avg_pool_2x(real256)
+    disc_out_real = disc(real256, real128, cosmos_params, is_training=False)
+    logits_real = disc_out_real["logits"]
 
-    disc_loss, _, _ = d_hinge_loss(out_real_logits, out_fake_logits)
-    gen_loss, adversarial_loss, reconstruction_loss = g_hinge_l1_loss(
-        out_fake_logits, fake_images, targets, l1_lambda
-    )
+    # Fake branch
+    fake256 = gen(inputs, cosmos_params, is_training=False)
+    fake128 = avg_pool_2x(fake256)
+    disc_out_fake = disc(fake256, fake128, cosmos_params, is_training=False)
+    logits_fake = disc_out_fake["logits"]
 
-    d_real_acc = (out_real_logits > 0.0).mean()
-    d_fake_acc = (out_fake_logits < 0.0).mean()
+    loss_real = bce_with_logits(logits_real, jnp.ones_like(logits_real))
+    loss_fake = bce_with_logits(logits_fake, jnp.zeros_like(logits_fake))
+    d_loss = loss_real + loss_fake
+
+    adv = bce_with_logits(logits_fake, jnp.ones_like(logits_fake))
+    rec = jnp.mean(jnp.abs(fake256 - targets))
+    g_loss = adv + l1_lambda * rec
+
+    d_real_acc = (logits_real > 0.0).mean()
+    d_fake_acc = (logits_fake < 0.0).mean()
     d_acc = 0.5 * (d_real_acc + d_fake_acc)
-    g_trick_acc = (out_fake_logits > 0.0).mean()
+    g_trick_acc = (logits_fake > 0.0).mean()
 
     return {
-        "d_loss": disc_loss,
+        "d_loss": d_loss,
         "d_real_acc": d_real_acc,
         "d_fake_acc": d_fake_acc,
         "d_acc": d_acc,
-        "g_loss": gen_loss,
-        "g_adversarial": adversarial_loss,
-        "g_reconstruct": reconstruction_loss,
+        "D_real": jax.nn.sigmoid(logits_real).mean(),
+        "D_fake": jax.nn.sigmoid(logits_fake).mean(),
+        "g_loss": g_loss,
+        "g_adv": adv,
+        "g_l1": rec,
         "g_trick_acc": g_trick_acc,
-        "sample_fake": fake_images,
+        "sample_fake": fake256,
     }
 
 
@@ -281,8 +306,8 @@ def train(
     img_channels: int,
     cosmos_params_len: int,
     log_every: int,
-    generator: Generator,
-    discriminator: Discriminator,
+    generator: nnx.Module,
+    discriminator: nnx.Module,
     opt_gen,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
     opt_disc,  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
     data_key: Array,
@@ -349,13 +374,13 @@ def train(
             position=1,
             desc=f"Epoch: {epoch:03d} - Training Batch",
         ):
-            d_metrics = disc_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
+            d_metrics = d_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
 
             if (step % args.n_critic) == 0:
-                g_metrics = gen_step(
-                    generator,
+                g_metrics = g_step(
+                    generator,  # pyright: ignore[reportUnknownArgumentType]
                     opt_gen,  # pyright: ignore[reportUnknownArgumentType]
-                    discriminator,
+                    discriminator,  # pyright: ignore[reportUnknownArgumentType]
                     batch,  # pyright: ignore[reportUnknownArgumentType]
                     l1_lambda=args.l1_lambda,  # pyright: ignore[reportAny]
                 )
@@ -363,8 +388,8 @@ def train(
             global_step += 1
             step += 1
             if step % log_every == 0 or step == train_steps_per_epoch:
-                d_log = {f"train/{k}": v for k, v in _to_float_dict(d_metrics).items()}
-                g_log = {f"train/{k}": v for k, v in _to_float_dict(g_metrics).items()}
+                d_log = {f"train/{k}": v for k, v in _to_float_dict(d_metrics).items()}  # pyright: ignore[reportAny]
+                g_log = {f"train/{k}": v for k, v in _to_float_dict(g_metrics).items()}  # pyright: ignore[reportAny]
                 log = {"epoch": epoch, "step": global_step} | d_log | g_log
                 print(
                     f"\n[Epoch {epoch:03d} Step {step:04d}] "
@@ -378,14 +403,14 @@ def train(
 
         save_checkpoint(
             args.checkpoint_dir,
-            model=generator,
-            optimizer=opt_gen,
+            generator,
+            opt_gen,
             alt_name=f"generator_epoch_{epoch:03d}_gloss_{g_metrics['g_loss']:.03f}",
         )
         save_checkpoint(
             args.checkpoint_dir,
-            model=discriminator,
-            optimizer=opt_disc,
+            discriminator,
+            opt_disc,
             alt_name=f"discriminator_epoch_{epoch:03d}_dacc_{d_metrics['d_acc']:.03f}",
         )
 
@@ -472,7 +497,7 @@ def main(parser: argparse.ArgumentParser):
         cosmos_params_mu,
         cosmos_params_sigma,
     ) = make_train_test_loaders(
-        key=train_test_key,  # pyright: ignore[reportAny]
+        key=train_test_key,  # pyright: ignore[reportUnknownArgumentType]
         batch_size=args.batch_size,  # pyright: ignore[reportAny]
         input_data_path=args.input_maps,  # pyright: ignore[reportAny]
         output_data_path=args.output_maps,  # pyright: ignore[reportAny]
@@ -491,9 +516,8 @@ def main(parser: argparse.ArgumentParser):
     print("----- Creating Discriminator -----")
     discriminator = src.Discriminator(
         key=disc_key,
-        in_channels=args.img_channels,
-        condition_dim=cosmos_params_len,
-        condition_proj_dim=8,
+        in_features=args.img_channels,  # pyright: ignore[reportAny]
+        len_condition_params=cosmos_params_len,
     )
 
     print("----- Creating Optimizers -----")
