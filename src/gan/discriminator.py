@@ -106,7 +106,7 @@ class SpectralNorm(nnx.Module):
 
         return sigma, u
 
-    def __call__(self, *args, is_training: bool = True, **kwargs):
+    def __call__(self, *args, training: bool = True, **kwargs):
         """Forward pass with spectral normalization applied.
 
         Args:
@@ -121,15 +121,8 @@ class SpectralNorm(nnx.Module):
 
         original_weight = weight_param.value
 
-        # During training: compute spectral norm and update u
-        # During inference: use cached u vector without updating
-        if is_training:
-            sigma, _ = self._compute_spectral_norm(
-                original_weight, update_u=not nnx.is_initializing()
-            )
-        else:
-            # Use cached u vector for inference (no updates)
-            sigma, _ = self._compute_spectral_norm(original_weight, update_u=False)
+        # Compute spectral norm and optionally update u based on training flag
+        sigma, _ = self._compute_spectral_norm(original_weight, update_u=training)
 
         normalized_weight = original_weight / (sigma + self.eps)
 
@@ -250,9 +243,9 @@ class Discriminator(nnx.Module):
 
         out = jnp.concatenate([inputs, output, condition_params_proj], axis=-1)
 
-        out = nnx.leaky_relu(self.conv1(x=out, training=is_training), 0.2)
-        out = nnx.leaky_relu(self.conv2(x=out, training=is_training), 0.2)
-        out = nnx.leaky_relu(self.conv3(x=out, training=is_training), 0.2)
+        out = nnx.leaky_relu(self.conv1(out, training=is_training), 0.2)
+        out = nnx.leaky_relu(self.conv2(out, training=is_training), 0.2)
+        out = nnx.leaky_relu(self.conv3(out, training=is_training), 0.2)
         logits = self.conv4(out, training=is_training)
 
         return logits

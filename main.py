@@ -64,7 +64,9 @@ def make_train_test_loaders(
     # This ensures that there is no data leakage
     assert len(jnp.intersect1d(train_idx, test_idx)) == 0
 
-    def _standardize_params(x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
+    def _standardize_params(
+        x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray
+    ) -> jnp.ndarray:
         return (x - mu) / sigma
 
     def _add_channel_last(x: jnp.ndarray):
@@ -116,11 +118,19 @@ def d_hinge_loss(
 
 
 def g_hinge_l1_loss(
-    fake_logits: jnp.ndarray, y_fake: jnp.ndarray, y_real: jnp.ndarray, l1_lambda: float = 100.0
+    fake_logits: jnp.ndarray,
+    y_fake: jnp.ndarray,
+    y_real: jnp.ndarray,
+    l1_lambda: float = 100.0,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     adversarial = -jnp.mean(fake_logits)
     reconstruction_loss = jnp.mean(jnp.abs(y_real - y_fake))
-    return (adversarial + l1_lambda * reconstruction_loss, adversarial, reconstruction_loss)
+    return (
+        adversarial + l1_lambda * reconstruction_loss,
+        adversarial,
+        reconstruction_loss,
+    )
+
 
 @nnx.jit
 def disc_step(
@@ -128,15 +138,23 @@ def disc_step(
 ) -> dict[str, jnp.ndarray]:
     inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
-    def loss_fn(disc: Discriminator, gen: Generator) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+    def loss_fn(
+        disc: Discriminator, gen: Generator
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         out_real_logits = disc(
-            inputs=inputs, output=targets, condition_params=cosmos_params, is_training=True
+            inputs=inputs,
+            output=targets,
+            condition_params=cosmos_params,
+            is_training=True,
         )
 
         out_fake_images = gen(inputs, cosmos_params)
         out_fake_images = jax.lax.stop_gradient(out_fake_images)
         out_fake_logits = disc(
-            inputs=inputs, output=out_fake_images, condition_params=cosmos_params, is_training=True
+            inputs=inputs,
+            output=out_fake_images,
+            condition_params=cosmos_params,
+            is_training=True,
         )
         disc_loss, _, _ = d_hinge_loss(out_real_logits, out_fake_logits)
 
@@ -158,6 +176,7 @@ def disc_step(
     opt_disc.update(model=disc, grads=grads)
     return metrics
 
+
 @nnx.jit
 def gen_step(
     gen: Generator,
@@ -168,10 +187,15 @@ def gen_step(
 ) -> dict[str, jnp.ndarray]:
     inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
-    def loss_fn(gen: Generator, disc: Discriminator) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+    def loss_fn(
+        gen: Generator, disc: Discriminator
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         fake_images = gen(inputs, cosmos_params)
         out_fake_logits = disc(
-            inputs=inputs, output=fake_images, condition_params=cosmos_params, is_training=True
+            inputs=inputs,
+            output=fake_images,
+            condition_params=cosmos_params,
+            is_training=True,
         )
 
         gen_loss, adversarial_loss, reconstruction_loss = g_hinge_l1_loss(
@@ -192,15 +216,26 @@ def gen_step(
     opt_gen.update(model=gen, grads=grads)
     return metrics
 
+
 @nnx.jit
 def eval_step(
-    disc: Discriminator, gen: Generator, batch: dict[str, jnp.ndarray], l1_lambda: float = 100.0
+    disc: Discriminator,
+    gen: Generator,
+    batch: dict[str, jnp.ndarray],
+    l1_lambda: float = 100.0,
 ) -> dict[str, jnp.ndarray]:
     inputs, cosmos_params, targets = batch["inputs"], batch["params"], batch["targets"]
 
-    out_real_logits = disc(inputs=inputs, output=targets, condition_params=cosmos_params, is_training=False)
+    out_real_logits = disc(
+        inputs=inputs, output=targets, condition_params=cosmos_params, is_training=False
+    )
     fake_images = gen(inputs, cosmos_params)
-    out_fake_logits = disc(inputs=inputs, output=fake_images, condition_params=cosmos_params, is_training=False)
+    out_fake_logits = disc(
+        inputs=inputs,
+        output=fake_images,
+        condition_params=cosmos_params,
+        is_training=False,
+    )
 
     disc_loss, _, _ = d_hinge_loss(out_real_logits, out_fake_logits)
     gen_loss, adversarial_loss, reconstruction_loss = g_hinge_l1_loss(
@@ -265,8 +300,12 @@ def _wandb_images(
 
     imgs = []
     for i in range(min(max_items, inputs.shape[0])):
-        imgs.append(wandb.Image(_to_uint8_linear(inputs[i]), caption=f"inputs[{i}] lin"))
-        imgs.append(wandb.Image(_to_uint8_linear(targets[i]), caption=f"target[{i}] lin"))
+        imgs.append(
+            wandb.Image(_to_uint8_linear(inputs[i]), caption=f"inputs[{i}] lin")
+        )
+        imgs.append(
+            wandb.Image(_to_uint8_linear(targets[i]), caption=f"target[{i}] lin")
+        )
         imgs.append(wandb.Image(_to_uint8_linear(fake[i]), caption=f"fake[{i}] lin"))
     return imgs
 
@@ -402,7 +441,9 @@ def train(
             position=1,
             desc=f"Epoch {epoch:03d} - Running Eval Batch",
         ):
-            metrics = eval_step(discriminator, generator, batch, l1_lambda=args.l1_lambda)  # pyright: ignore[reportAny, reportUnknownArgumentType]
+            metrics = eval_step(
+                discriminator, generator, batch, l1_lambda=args.l1_lambda
+            )  # pyright: ignore[reportAny, reportUnknownArgumentType]
             if first_fake is None:
                 first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
                 first_batch = batch
@@ -544,7 +585,7 @@ if __name__ == "__main__":
     parser.add_argument("--n-critic", type=int, default=1)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--l1-lambda", type=float, default=100)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--transform-name", default="signed_log1p")  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--epochs", default=30)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--epochs", default=150)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--log-rate", default=5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--input-maps")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--output-maps")  # pyright: ignore[reportUnusedCallResult]
