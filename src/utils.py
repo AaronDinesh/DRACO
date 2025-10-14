@@ -13,11 +13,18 @@ _STD_CHKPTR = ocp.StandardCheckpointer()
 def make_transform(
     name: TransformName,
     scale: float = 1.0,
-) -> tuple[Callable[[jnp.ndarray], jnp.ndarray], Callable[[jnp.ndarray], jnp.ndarray]]:
+):
     """
     Returns (forward, inverse) intensity transforms.
-    The 'scale' roughly sets the transition between linear and log-like behavior.
+    For 'asinh_viz': 2D map -> pretty grayscale [0,1] image using:
+      - |B| magnitude
+      - percentile clip [0.5, 99.5]
+      - light Gaussian blur (sigma≈1.2 px)
+      - asinh with robust 'scale' (if scale<=0 or non-finite, auto=p95(|blurred|))
+      - min-max normalize to [0,1]
+    NOTE: 'inverse' for 'asinh_viz' cannot undo clip/blur/normalize; it returns input.
     """
+
     if name == "none":
         return (lambda x: x, lambda y: y)
 
@@ -45,7 +52,113 @@ def make_transform(
 
         return forward, inverse
 
-    raise ValueError(f"Unknown transform name: {name!r}")  # pyright: ignore[reportUnreachable]
+    if name == "log10":
+        ln10 = jnp.log(10.0)
+        inv_ln10 = 1.0 / ln10
+
+        def forward(x: jnp.ndarray):
+            x_shape_dim = len(x.shape)
+
+            if x_shape_dim == 2:
+                reduce_axes = (0, 1)
+            elif x_shape_dim == 3:
+                reduce_axes = (1, 2)
+            elif x_shape_dim == 4:
+                reduce_axes = (1, 2)
+
+            tiny = jnp.finfo(x.dtype).tiny
+            g = jnp.log(jnp.maximum(x, tiny))  # (B,H,W,C)
+            g_min = jnp.min(g, axis=reduce_axes, keepdims=True)  # (B,1,1,C) or (B,1,1,1)
+            y = (g - g_min) * inv_ln10  # base-10, min->0
+            return y
+
+        def inverse(y: jnp.ndarray) -> jnp.ndarray:
+            g = y * ln10
+            return jnp.exp(g)
+
+        return forward, inverse
+
+    if name == "signed_log10":
+        # y = sign(x) * log10(1 + |x|/s)
+        # x = sign(y) * s * (10**|y| - 1)
+        # Symmetric, zero-centered, reversible (no clipping/blur inside)
+        s = float(scale)
+
+        def forward(x: jnp.ndarray):
+            ax = jnp.abs(x)
+            return jnp.sign(x) * jnp.log10(1.0 + ax / s)
+
+        def inverse(y: jnp.ndarray):
+            ay = jnp.abs(y)
+            return jnp.sign(y) * s * (jnp.power(10.0, ay) - 1.0)
+
+    if name == "asinh_viz":
+        # Self-contained helpers scoped inside the block to minimize globals.
+        def _percentile(x, q):
+            x = jnp.sort(x.reshape(-1))
+            idx = (q / 100.0) * (x.size - 1)
+            lo = jnp.floor(idx).astype(int)
+            hi = jnp.ceil(idx).astype(int)
+            w = idx - lo
+            return (1.0 - w) * x[lo] + w * x[hi]
+
+        def _gaussian_blur2d(img, sigma=1.2):
+            r = int(jnp.ceil(3.0 * sigma))
+            xk = jnp.arange(-r, r + 1)
+            k = jnp.exp(-0.5 * (xk / sigma) ** 2)
+            k = k / jnp.sum(k)
+
+            def _conv1d(a, k, axis):
+                pad = [(0, 0)] * a.ndim
+                pad[axis] = (r, r)
+                a = jnp.pad(a, pad, mode="reflect")
+                idx = jnp.arange(a.shape[axis] - 2 * r)
+                out = 0.0
+                for i, kv in enumerate(k):
+                    out = out + kv * jnp.take(a, idx + i, axis=axis)
+                return out
+
+            out = _conv1d(img, k, axis=0)
+            out = _conv1d(out, k, axis=1)
+            return out
+
+        s_user = float(scale)
+
+        def forward(x2d: jnp.ndarray) -> jnp.ndarray:
+            # 1) magnitude (grayscale look)
+            mag = jnp.abs(x2d)
+
+            # 2) robust clip to suppress outliers
+            lo = _percentile(mag, 0.5)
+            hi = _percentile(mag, 99.5)
+            mag = jnp.clip(mag, lo, hi)
+
+            # 3) gentle blur to reveal filaments
+            mag = _gaussian_blur2d(mag, sigma=1.2)
+
+            # 4) robust asinh scale
+            if not jnp.isfinite(s_user) or s_user <= 0.0:
+                s = _percentile(jnp.abs(mag), 95.0)
+            else:
+                s = s_user
+            s = jnp.maximum(s, 1e-12)
+
+            y = jnp.arcsinh(mag / s)
+
+            # 5) normalize to [0,1] for display
+            ymin = jnp.min(y)
+            ymax = jnp.max(y)
+            y = (y - ymin) / (ymax - ymin + 1e-12)
+            return y
+
+        def inverse(y_disp: jnp.ndarray) -> jnp.ndarray:
+            # Not invertible (clip/blur/normalize lose information).
+            # Return input as a no-op to keep API-compatible.
+            return y_disp
+
+        return forward, inverse
+
+    raise ValueError(f"Unknown transform name: {name!r}")
 
 
 def save_checkpoint(

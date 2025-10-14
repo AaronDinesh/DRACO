@@ -1,67 +1,61 @@
-import subprocess
+import argparse
+from pathlib import Path
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.animation import FFMpegWriter
+from PIL import Image
 from tqdm import tqdm
 
-height, width = 256, 256
-
-
-# It is important to add this line if you are using the UV Package manager
-matplotlib.use("Qt5Agg")  # or 'Qt5Agg' if using PyQt5
+from src.utils import make_transform
 
 
 def main():
-    data = np.load("data/Maps_B_IllustrisTNG_1P_z=0.00.npy")
-    nframes = len(data)
-    print(f"nframes: {nframes}")
-    filename = "visualization.mp4"
-    fps = 5
-    height, width = data.shape[1], data.shape[2]
-
-    min_val = np.min(data)
-    max_val = np.max(data)
-
-    ffmpeg = subprocess.Popen(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-vcodec",
-            "rawvideo",
-            "-s",
-            f"{width}x{height}",
-            "-pix_fmt",
-            "gray",
-            "-r",
-            f"{fps}",
-            "-i",
-            "-",
-            "-an",
-            "-vcodec",
-            "libx264",
-            "-pix_fmt",
-            "rgb24",
-            f"{filename}",
-        ],
-        stdin=subprocess.PIPE,
+    parser = argparse.ArgumentParser(description="Visualize slices of a .npy tensor.")
+    parser.add_argument("--input-file", type=Path, help="Path to the input .npy file.")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default="visualizations",
+        help="Directory to save the output images.",
     )
+    parser.add_argument(
+        "--transform",
+        type=str,
+        default="signed_log1p",
+        help="Transform to apply to the images.",
+    )
+    parser.add_argument("--scale", type=float, default=1.0, help="Scale for the transform.")
+    args = parser.parse_args()
 
-    for i in tqdm(range(nframes), desc="Processing video...", unit="frames", total=nframes):
-        _data_flatten = data[i].flatten()
-        # TODO: Fix to be logarithmic scaling. Base 10. B, Mcdm, Mtot,
-        # TODO: Look at correlation + Power Spectrum
-        _data_flatten = np.log(_data_flatten)
-        _data = (_data_flatten - _data_flatten.min()) / (_data_flatten.max() - _data_flatten.min())
-        _data = _data.reshape(data[i].shape)
-        frame = (_data * 255).astype(np.uint8)
-        ffmpeg.stdin.write(frame.tobytes())
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    ffmpeg.stdin.close()
-    ffmpeg.wait()
+    try:
+        data = np.load(args.input_file, mmap_mode="r")
+    except FileNotFoundError:
+        print(f"Error: Input file not found at {args.input_file}")
+        return
+
+    if data.ndim != 3 or data.shape[1:] != (256, 256):
+        print(f"Error: Input tensor must have shape [N, 256, 256], but got {data.shape}")
+        return
+
+    transform, _ = make_transform(args.transform, scale=args.scale)
+
+    for i, slice_2d in tqdm(enumerate(data), desc="Processing Images...", total=data.shape[0]):
+        # Apply the transform
+        transformed_slice = transform(slice_2d)
+        # Normalize to 0-255 for image saving
+        img_array = np.array(transformed_slice)
+        # img_array -= img_array.min()
+        img_array /= img_array.max()
+        img_array *= 255
+        img_array = img_array.astype(np.uint8)
+
+        # Save the image
+        img = Image.fromarray(img_array)
+        output_path = args.output_dir / f"{args.input_file.stem}_slice_{i:04d}.png"
+        img.save(output_path)
+
+    print(f"Saved {len(data)} images to {args.output_dir}")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ from typing import Callable, Literal, TypedDict
 
 from jax import Array
 
-TransformName = Literal["none", "asinh", "signed_log1p"]
+TransformName = Literal["none", "asinh", "signed_log1p", "asinh_viz", "log10", "signed_log10"]
 
 
 class Batch(TypedDict):
