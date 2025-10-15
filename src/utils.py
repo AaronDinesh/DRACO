@@ -200,3 +200,8 @@ def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.O
     nnx.update(optimizer, checkpoint["opt_state"])  # pyright: ignore[reportUnknownMemberType]
 
     return checkpoint.get("data_stats", None)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+
+
+def delete_checkpoint(checkpoint_path: str, folder_name: str):
+    checkpoint_folder = Path(checkpoint_path, folder_name)
+    checkpoint_folder.
