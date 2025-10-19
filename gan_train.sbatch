@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=gan_test_adinesh
-#SBATCH --time=00:20:00
+#SBATCH --time=04:00:00
 #SBATCH --environment=GAN
 #SBATCH --account=sk030
 #SBATCH -G 1

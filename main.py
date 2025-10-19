@@ -1,6 +1,7 @@
 import argparse
 import collections.abc
 import math
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -444,7 +445,8 @@ def train(
         eval_avg = {k: v / eval_steps_per_epoch for k, v in eval_sums.items()}  # pyright: ignore[reportUnknownVariableType]
 
         if eval_avg["d_acc"] > best_disc_acc:
-            delete_checkpoint(args.checkpoint_dir, f"BEST_DISC_ACC_acc_{best_disc_acc:.04f}")
+            if Path(args.checkpoint_dir, f"BEST_DISC_ACC_acc_{best_disc_acc:.04f}").exists():
+                delete_checkpoint(args.checkpoint_dir, f"BEST_DISC_ACC_acc_{best_disc_acc:.04f}")
             best_disc_acc = eval_avg["d_acc"]
             save_checkpoint(
                 args.checkpoint_dir,
@@ -456,7 +458,8 @@ def train(
             )
 
         if eval_avg["g_loss"] < best_gan_loss:
-            delete_checkpoint(args.checkpoint_dir, f"BEST_GAN_LOSS_loss_{best_gan_loss:.04f}")
+            if Path(args.checkpoint_dir, f"BEST_GAN_LOSS_loss_{best_gan_loss:.04f}").exists():
+                delete_checkpoint(args.checkpoint_dir, f"BEST_GAN_LOSS_loss_{best_gan_loss:.04f}")
             best_gan_loss = eval_avg["g_loss"]
             save_checkpoint(
                 args.checkpoint_dir,
@@ -576,7 +579,7 @@ if __name__ == "__main__":
     parser.add_argument("--n-critic", type=int, default=1)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--l1-lambda", type=float, default=100)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--transform-name", default="log10")  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--epochs", default=20)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--epochs", default=150)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--log-rate", default=5)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--input-maps")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--output-maps")  # pyright: ignore[reportUnusedCallResult]

@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -202,6 +203,6 @@ def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.O
     return checkpoint.get("data_stats", None)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
 
-def delete_checkpoint(checkpoint_path: str, folder_name: str):
+def delete_checkpoint(checkpoint_path: str, folder_name: str) -> None:
     checkpoint_folder = Path(checkpoint_path, folder_name)
-    checkpoint_folder.
+    shutil.rmtree(checkpoint_folder)
