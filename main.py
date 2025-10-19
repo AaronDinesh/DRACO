@@ -544,6 +544,14 @@ def main(parser: argparse.ArgumentParser):
         wrt=nnx.Param,
     )
 
+    if args.generator_checkpoint_path:
+        print(f"----- Loading Generator from {args.generator_checkpoint_path} -----")
+        restore_checkpoint(args.generator_checkpoint_path, generator, opt_gen)
+
+    if args.discriminator_checkpoint_path:
+        print(f"----- Loading Discriminator from {args.discriminator_checkpoint_path} -----")
+        restore_checkpoint(args.discriminator_checkpoint_path, discriminator, opt_disc)
+
     print("----- Begining Training Run -----")
     train(
         num_epochs=args.epochs,  # pyright: ignore[reportAny]
@@ -589,5 +597,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-wandb", action="store_true", default=True)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--wandb-proj-name", default="DRACO")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--wandb-run-name", default="nnx-cgan-256-run-4")  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--generator-checkpoint-path", default=None)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--discriminator-checkpoint-path", default=None)  # pyright: ignore[reportUnusedCallResult]
 
     main(parser)
