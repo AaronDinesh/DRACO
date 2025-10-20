@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 from collections import deque
+from functools import partial
 from pathlib import Path
 
 import flax.nnx as nnx
@@ -113,7 +114,7 @@ def make_optim_and_steps(args: argparse.Namespace):
         )
         return optimizer, model, metrics
 
-    @jax.jit(donate_argnums=(1,))  # donate the batch (arg index 1)
+    @partial(jax.jit, donate_argnums=(1,))
     def eval_step(
         model: StochasticInterpolantModel,
         batch: dict[str, jnp.ndarray],
