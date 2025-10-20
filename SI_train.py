@@ -420,7 +420,7 @@ def build_argparser() -> argparse.ArgumentParser:
     # training
     p.add_argument("--epochs", type=int, default=150000)
     p.add_argument("--batch-size", type=int, default=64)
-    p.add_argument("--crop-size", type=int, default=128)
+    p.add_argument("--crop-size", type=int, default=256)
     p.add_argument("--g-lr", type=float, default=2e-4)
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--cfg-drop-p", type=float, default=0.1)
