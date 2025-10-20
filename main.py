@@ -18,94 +18,13 @@ import src
 import wandb
 from src import Discriminator, Generator
 from src.typing import Batch, Loader, TransformName
-from src.utils import delete_checkpoint, make_transform, restore_checkpoint, save_checkpoint
-
-
-def make_train_test_loaders(
-    key: Array,
-    batch_size: int,
-    input_data_path: str,
-    output_data_path: str,
-    csv_path: str,
-    test_ratio: float = 0.2,
-    transform_name: TransformName = "signed_log1p",
-):
-    input_maps = jnp.load(input_data_path, mmap_mode="r")
-    output_maps = jnp.load(output_data_path, mmap_mode="r")
-    cosmos_params = pd.read_csv(csv_path, header=None, sep=" ")
-
-    repeat_factor: int = input_maps.shape[0] // len(cosmos_params)
-    # fmt: off
-    cosmos_params = cosmos_params.loc[cosmos_params.index.repeat(repeat_factor)].reset_index(drop=True)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    # fmt: on
-    cosmos_params = jnp.asarray(cosmos_params.to_numpy())  # pyright: ignore[reportUnknownMemberType]
-
-    assert len(input_maps) == len(cosmos_params), (
-        f"The length of the input maps {input_maps.shape} do not match the number of cosmos params entries {cosmos_params.shape}"
-    )
-    assert len(input_maps) == len(output_maps), (
-        "The number of input maps does not match the number of output maps"
-    )
-
-    dataset_len = len(input_maps)
-
-    n_test = max(1, int(round(test_ratio * dataset_len)))
-
-    random_shuffle = jax.random.permutation(key=key, x=dataset_len)
-
-    test_idx = random_shuffle[:n_test]
-    train_idx = random_shuffle[n_test:]
-
-    # after train_idx/test_idx are defined
-    mu = jnp.mean(cosmos_params[train_idx], axis=0)
-    sigma = jnp.std(cosmos_params[train_idx], axis=0) + 1e-6
-
-    forward_transform, _ = make_transform(name=transform_name)
-
-    # This ensures that there is no data leakage
-    assert len(jnp.intersect1d(train_idx, test_idx)) == 0
-
-    def _standardize_params(x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
-        return (x - mu) / sigma
-
-    def _add_channel_last(x: jnp.ndarray):
-        # x is (N,H,W) or (N,H,W,C); return (N,H,W,1) or (N,H,W,C)
-        return x[..., None] if x.ndim == 3 else x
-
-    def _run_epoch(
-        shuffled_idx: jnp.ndarray, key: Array | None, drop_last: bool = False
-    ) -> collections.abc.Generator[Batch]:
-        if key is not None:
-            shuffled_idx = jax.random.permutation(key=key, x=shuffled_idx)
-
-        n = len(shuffled_idx)
-        stop = (n // batch_size) * batch_size if drop_last else n
-
-        for s in range(0, stop, batch_size):
-            batch = shuffled_idx[s : s + batch_size]
-
-            yield {
-                "inputs": forward_transform(_add_channel_last(input_maps[batch])),
-                "targets": forward_transform(_add_channel_last(output_maps[batch])),
-                "params": _standardize_params(cosmos_params[batch], mu=mu, sigma=sigma),
-            }
-
-    def train_loader(key: Array | None = None, drop_last: bool = False):
-        return _run_epoch(train_idx, key, drop_last)
-
-    def test_loader(key: Array | None = None, drop_last: bool = False):
-        return _run_epoch(test_idx, key, drop_last)
-
-    return (
-        train_loader,
-        test_loader,
-        len(train_idx),
-        len(test_idx),
-        input_maps[0].shape[1],
-        cosmos_params[0].shape[0],
-        mu,
-        sigma,
-    )
+from src.utils import (
+    delete_checkpoint,
+    make_train_test_loaders,
+    make_transform,
+    restore_checkpoint,
+    save_checkpoint,
+)
 
 
 def d_hinge_loss(

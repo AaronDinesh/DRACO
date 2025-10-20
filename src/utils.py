@@ -11,6 +11,93 @@ from src.typing import TransformName
 _STD_CHKPTR = ocp.StandardCheckpointer()
 
 
+def make_train_test_loaders(
+    key: Array,
+    batch_size: int,
+    input_data_path: str,
+    output_data_path: str,
+    csv_path: str,
+    test_ratio: float = 0.2,
+    transform_name: TransformName = "signed_log1p",
+):
+    input_maps = jnp.load(input_data_path, mmap_mode="r")
+    output_maps = jnp.load(output_data_path, mmap_mode="r")
+    cosmos_params = pd.read_csv(csv_path, header=None, sep=" ")
+
+    repeat_factor: int = input_maps.shape[0] // len(cosmos_params)
+    # fmt: off
+    cosmos_params = cosmos_params.loc[cosmos_params.index.repeat(repeat_factor)].reset_index(drop=True)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    # fmt: on
+    cosmos_params = jnp.asarray(cosmos_params.to_numpy())  # pyright: ignore[reportUnknownMemberType]
+
+    assert len(input_maps) == len(cosmos_params), (
+        f"The length of the input maps {input_maps.shape} do not match the number of cosmos params entries {cosmos_params.shape}"
+    )
+    assert len(input_maps) == len(output_maps), (
+        "The number of input maps does not match the number of output maps"
+    )
+
+    dataset_len = len(input_maps)
+
+    n_test = max(1, int(round(test_ratio * dataset_len)))
+
+    random_shuffle = jax.random.permutation(key=key, x=dataset_len)
+
+    test_idx = random_shuffle[:n_test]
+    train_idx = random_shuffle[n_test:]
+
+    # after train_idx/test_idx are defined
+    mu = jnp.mean(cosmos_params[train_idx], axis=0)
+    sigma = jnp.std(cosmos_params[train_idx], axis=0) + 1e-6
+
+    forward_transform, _ = make_transform(name=transform_name)
+
+    # This ensures that there is no data leakage
+    assert len(jnp.intersect1d(train_idx, test_idx)) == 0
+
+    def _standardize_params(x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
+        return (x - mu) / sigma
+
+    def _add_channel_last(x: jnp.ndarray):
+        # x is (N,H,W) or (N,H,W,C); return (N,H,W,1) or (N,H,W,C)
+        return x[..., None] if x.ndim == 3 else x
+
+    def _run_epoch(
+        shuffled_idx: jnp.ndarray, key: Array | None, drop_last: bool = False
+    ) -> collections.abc.Generator[Batch]:
+        if key is not None:
+            shuffled_idx = jax.random.permutation(key=key, x=shuffled_idx)
+
+        n = len(shuffled_idx)
+        stop = (n // batch_size) * batch_size if drop_last else n
+
+        for s in range(0, stop, batch_size):
+            batch = shuffled_idx[s : s + batch_size]
+
+            yield {
+                "inputs": forward_transform(_add_channel_last(input_maps[batch])),
+                "targets": forward_transform(_add_channel_last(output_maps[batch])),
+                "params": _standardize_params(cosmos_params[batch], mu=mu, sigma=sigma),
+            }
+
+    def train_loader(key: Array | None = None, drop_last: bool = False):
+        return _run_epoch(train_idx, key, drop_last)
+
+    def test_loader(key: Array | None = None, drop_last: bool = False):
+        return _run_epoch(test_idx, key, drop_last)
+
+    return (
+        train_loader,
+        test_loader,
+        len(train_idx),
+        len(test_idx),
+        input_maps[0].shape[1],
+        cosmos_params[0].shape[0],
+        mu,
+        sigma,
+    )
+
+
 def make_transform(
     name: TransformName,
     scale: float = 1.0,
@@ -206,3 +293,171 @@ def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.O
 def delete_checkpoint(checkpoint_path: str, folder_name: str) -> None:
     checkpoint_folder = Path(checkpoint_path, folder_name)
     shutil.rmtree(checkpoint_folder)
+
+
+##### Stochastic Interpolant helpers
+
+
+def gamma_and_deriv(
+    t: jnp.ndarray, a: float = 1.0, eps: float = 1e-6
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    t = jnp.clip(t, eps, 1.0 - eps)
+    num = 2.0 * a * t * (1.0 - t)
+    gamma = jnp.sqrt(num)
+    gamma_dot = a * (1.0 - 2.0 * t) / jnp.maximum(gamma, eps)
+    return gamma, gamma_dot
+
+
+def make_xt_and_targets(
+    x0: jnp.ndarray, x1: jnp.ndarray, z: jnp.ndarray, t: jnp.ndarray, a: float = 1.0
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    I = (1.0 - t)[:, None, None, None] * x0 + t[:, None, None, None] * x1
+    gamma, gamma_dot = gamma_and_deriv(t, a=a)
+    x_t = I + gamma[:, None, None, None] * z
+    dI = x1 - x0
+    gdot_z = gamma_dot[:, None, None, None] * z
+    return x_t, dI, gdot_z
+
+
+def build_t_grid(
+    n_steps: int, endpoint_clip: float = 1e-3, schedule: str = "cosine", power: float = 2.0
+) -> jnp.ndarray:
+    if schedule == "linear":
+        t = jnp.linspace(0.0 + endpoint_clip, 1.0 - endpoint_clip, n_steps)
+    elif schedule == "cosine":
+        s = jnp.linspace(0.0, 1.0, n_steps)
+        t = 0.5 - 0.5 * jnp.cos(jnp.pi * s)
+        t = t * (1.0 - 2 * endpoint_clip) + endpoint_clip
+    elif schedule == "power":
+        s = jnp.linspace(0.0, 1.0, n_steps) ** power
+        t = s * (1.0 - 2 * endpoint_clip) + endpoint_clip
+    else:
+        raise ValueError("Unknown t schedule")
+    return t
+
+
+def epsilon_schedule(t: jnp.ndarray, eps0: float = 0.1, taper: float = 0.6) -> jnp.ndarray:
+    return eps0 * (t * (1.0 - t)) ** taper
+
+
+def sde_sample_forward_conditional(
+    model,
+    x0: jnp.ndarray,
+    cond_vec: jnp.ndarray,
+    n_infer_steps: int = 250,
+    a_gamma: float = 1.0,
+    eps0: float = 0.1,
+    eps_taper: float = 0.6,
+    endpoint_clip: float = 1e-3,
+    t_schedule: str = "cosine",
+    t_power: float = 2.0,
+    key: jax.Array | None = None,
+) -> jnp.ndarray:
+    key = key or jax.random.PRNGKey(0)
+    B = x0.shape[0]
+    X = x0
+    t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
+    dt = 1.0 / n_infer_steps
+
+    def body_fn(i, state):
+        X, key = state
+        key, sub = jax.random.split(key)
+        t_i = jnp.broadcast_to(t_grid[i], (B,))
+        eps_i = epsilon_schedule(t_i, eps0, eps_taper)
+        gamma_i, _ = gamma_and_deriv(t_i, a=a_gamma)
+        b_hat, eta_hat = model(X, t_i, cond_vec)
+        s_hat = -eta_hat / gamma_i[:, None, None, None]
+        bF = b_hat + eps_i[:, None, None, None] * s_hat
+        noise = jax.random.normal(sub, X.shape)
+        X_next = X + bF * dt + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
+        return (X_next, key)
+
+    X, _ = jax.lax.fori_loop(0, n_infer_steps, body_fn, (X, key))
+    return X
+
+
+def sde_sample_forward_cfg(
+    model,
+    x0: jnp.ndarray,
+    cond_vec: jnp.ndarray,
+    guidance_scale: float = 1.5,
+    n_infer_steps: int = 250,
+    a_gamma: float = 1.0,
+    eps0: float = 0.1,
+    eps_taper: float = 0.6,
+    endpoint_clip: float = 1e-3,
+    t_schedule: str = "cosine",
+    t_power: float = 2.0,
+    key: jax.Array | None = None,
+) -> jnp.ndarray:
+    key = key or jax.random.PRNGKey(0)
+    B = x0.shape[0]
+    X = x0
+    t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
+    dt = 1.0 / n_infer_steps
+
+    def body_fn(i, state):
+        X, key = state
+        key, sub = jax.random.split(key)
+        t_i = jnp.broadcast_to(t_grid[i], (B,))
+        eps_i = epsilon_schedule(t_i, eps0, eps_taper)
+        gamma_i, _ = gamma_and_deriv(t_i, a=a_gamma)
+
+        b_u, eta_u = model(X, t_i, jnp.zeros_like(cond_vec))
+        b_c, eta_c = model(X, t_i, cond_vec)
+
+        s = guidance_scale
+        b_hat = b_u + s * (b_c - b_u)
+        eta_hat = eta_u + s * (eta_c - eta_u)
+
+        s_hat = -eta_hat / gamma_i[:, None, None, None]
+        bF = b_hat + eps_i[:, None, None, None] * s_hat
+
+        noise = jax.random.normal(sub, X.shape)
+        X_next = X + bF * dt + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
+        return (X_next, key)
+
+    X, _ = jax.lax.fori_loop(0, n_infer_steps, body_fn, (X, key))
+    return X
+
+
+def random_crops(x: jnp.ndarray, crop: int, key: jax.Array) -> jnp.ndarray:
+    B, H, W, C = x.shape
+    key_h, key_w = jax.random.split(key)
+    hs = jax.random.randint(key_h, (B,), 0, H - crop + 1)
+    ws = jax.random.randint(key_w, (B,), 0, W - crop + 1)
+
+    def do_crop(i, xi):
+        h0 = hs[i]
+        w0 = ws[i]
+        return xi[h0 : h0 + crop, w0 : w0 + crop, :]
+
+    return jax.vmap(do_crop, in_axes=(0, 0))(jnp.arange(B), x)
+
+
+def maybe_hflip(x: jnp.ndarray, p: float, key: jax.Array) -> jnp.ndarray:
+    flip = jax.random.bernoulli(key, p, (x.shape[0],))
+    return jnp.where(flip[:, None, None, None], jnp.flip(x, axis=2), x)  # flip width
+
+
+def wandb_image_panel(
+    wandb, inputs: jnp.ndarray, targets: jnp.ndarray, preds: jnp.ndarray, max_items: int = 3
+):
+    def _to_uint8_linear(x: jnp.ndarray):
+        lo = jnp.percentile(x, 1.0)
+        hi = jnp.percentile(x, 99.0)
+        x01 = jnp.clip((x - lo) / jnp.maximum(hi - lo, 1e-8), 0.0, 1.0)
+        img = (x01 * 255.0).astype(jnp.uint8)
+        img = jax.device_get(img)
+        img = np.asarray(img)
+        if img.ndim == 3 and img.shape[-1] == 1:
+            img = img[..., 0]
+        return img
+
+    imgs: list = []
+    B = min(max_items, inputs.shape[0])
+    for i in range(B):
+        imgs.append(wandb.Image(_to_uint8_linear(inputs[i]), caption=f"in[{i}]"))
+        imgs.append(wandb.Image(_to_uint8_linear(targets[i]), caption=f"tgt[{i}]"))
+        imgs.append(wandb.Image(_to_uint8_linear(preds[i]), caption=f"gen[{i}]"))
+    return imgs
