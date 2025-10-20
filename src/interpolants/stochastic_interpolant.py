@@ -67,7 +67,7 @@ class AttentionBlock(nnx.Module):
         y = self.norm(x)  # (B,H,W,C)
         y = y.reshape(B, H * W, C)  # (B,N,C)
         # Self-attention: Q=K=V=y
-        y = self.mha(y, y, y)  # (B,N,C)
+        y = self.mha(y, y, y, decode=False)  # (B,N,C)
         y = y.reshape(B, H, W, C)  # (B,H,W,C)
         return x + y  # residual
 
@@ -134,21 +134,32 @@ class DownBlock(nnx.Module):
 
 class UpBlock(nnx.Module):
     def __init__(
-        self, c_in: int, c_out: int, cond_dim: int, attn: bool, num_heads: int, *, rngs: nnx.Rngs
+        self,
+        c_in: int,  # channels of incoming feature BEFORE upsample
+        c_out: int,  # channels AFTER conv_up
+        skip_c: int,  # channels coming from the skip you will concat
+        cond_dim: int,
+        attn: bool,
+        num_heads: int,
+        *,
+        rngs: nnx.Rngs,
     ):
-        # Up: resize (robust) + conv; avoids ConvTranspose checkerboard
+        # Up: resize + conv; avoids checkerboard artifacts
         self.conv_up = nnx.Conv(c_in, c_out, (3, 3), padding="SAME", rngs=rngs)
-        self.res1 = FiLMResBlock(c_out * 2, c_out, cond_dim, rngs=rngs)  # concat skip
+
+        # After upsample we concat with the skip: (c_out + skip_c) channels
+        self.res1 = FiLMResBlock(c_out + skip_c, c_out, cond_dim, rngs=rngs)
         self.res2 = FiLMResBlock(c_out, c_out, cond_dim, rngs=rngs)
+
         self.attn = AttentionBlock(c_out, num_heads=num_heads, rngs=rngs) if attn else None
 
     def __call__(self, x: jnp.ndarray, skip: jnp.ndarray, cond: jnp.ndarray) -> jnp.ndarray:
         B, Hs, Ws, _ = skip.shape
         x = jax.image.resize(x, (B, Hs, Ws, x.shape[-1]), method="bilinear")
-        x = self.conv_up(x)
-        x = jnp.concatenate([x, skip], axis=-1)
-        x = self.res1(x, cond)
-        x = self.res2(x, cond)
+        x = self.conv_up(x)  # (B, Hs, Ws, c_out)
+        x = jnp.concatenate([x, skip], axis=-1)  # (B, Hs, Ws, c_out + skip_c)
+        x = self.res1(x, cond)  # → (B, Hs, Ws, c_out)
+        x = self.res2(x, cond)  # → (B, Hs, Ws, c_out)
         if self.attn is not None:
             x = self.attn(x)
         return x
@@ -200,20 +211,32 @@ class StochasticInterpolantModel(nnx.Module):
         self.mid_attn = AttentionBlock(base_channels * 4, num_heads=num_heads, rngs=rngs)
         self.mid_res2 = FiLMResBlock(base_channels * 4, base_channels * 4, cond_dim, rngs=rngs)
 
-        # decoder
         self.up3 = UpBlock(
-            base_channels * 4,
-            base_channels * 2,
-            cond_dim,
+            c_in=base_channels * 4,  # coming from bottleneck
+            c_out=base_channels * 2,
+            skip_c=base_channels * 4,  # matches s3 channels
+            cond_dim=cond_dim,
             attn=True,
             num_heads=num_heads,
             rngs=rngs,
         )
         self.up2 = UpBlock(
-            base_channels * 2, base_channels, cond_dim, attn=True, num_heads=num_heads, rngs=rngs
+            c_in=base_channels * 2,
+            c_out=base_channels,
+            skip_c=base_channels * 2,  # matches s2 channels
+            cond_dim=cond_dim,
+            attn=True,
+            num_heads=num_heads,
+            rngs=rngs,
         )
         self.up1 = UpBlock(
-            base_channels, base_channels, cond_dim, attn=False, num_heads=num_heads, rngs=rngs
+            c_in=base_channels,
+            c_out=base_channels,
+            skip_c=base_channels,  # matches s1 channels
+            cond_dim=cond_dim,
+            attn=False,
+            num_heads=num_heads,
+            rngs=rngs,
         )
 
         # heads

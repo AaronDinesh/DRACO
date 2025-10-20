@@ -1,8 +1,8 @@
 from .gan.discriminator import Discriminator
 from .gan.generator import Generator
-from .interpolants import StochasticInterpolantModel:
+from .interpolants import StochasticInterpolantModel
 from .typing import Batch, Loader
-from .utils import make_transform, restore_checkpoint, save_checkpoint
+from .utils import batch_metrics, make_transform, restore_checkpoint, save_checkpoint
 
 __all__ = [
     "Generator",

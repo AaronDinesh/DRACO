@@ -1,12 +1,17 @@
+import collections.abc
 import shutil
 from pathlib import Path
 from typing import Callable, Literal
 
 import flax.nnx as nnx
+import jax
 import jax.numpy as jnp
+import numpy as np
 import orbax.checkpoint as ocp
+import pandas as pd
+from jax import Array, lax
 
-from src.typing import TransformName
+from src.typing import Batch, TransformName
 
 _STD_CHKPTR = ocp.StandardCheckpointer()
 
@@ -180,6 +185,8 @@ def make_transform(
             ay = jnp.abs(y)
             return jnp.sign(y) * s * (jnp.power(10.0, ay) - 1.0)
 
+        return forward, inverse
+
     if name == "asinh_viz":
         # Self-contained helpers scoped inside the block to minimize globals.
         def _percentile(x, q):
@@ -309,14 +316,14 @@ def gamma_and_deriv(
 
 
 def make_xt_and_targets(
-    x0: jnp.ndarray, x1: jnp.ndarray, z: jnp.ndarray, t: jnp.ndarray, a: float = 1.0
+    x0: jnp.ndarray, x1: jnp.ndarray, z: jnp.ndarray, time: jnp.ndarray, a: float = 1.0
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    I = (1.0 - t)[:, None, None, None] * x0 + t[:, None, None, None] * x1
-    gamma, gamma_dot = gamma_and_deriv(t, a=a)
-    x_t = I + gamma[:, None, None, None] * z
-    dI = x1 - x0
+    interpolant = (1.0 - time)[:, None, None, None] * x0 + time[:, None, None, None] * x1
+    gamma, gamma_dot = gamma_and_deriv(time, a=a)
+    x_t = interpolant + gamma[:, None, None, None] * z
+    dInterpolant = x1 - x0
     gdot_z = gamma_dot[:, None, None, None] * z
-    return x_t, dI, gdot_z
+    return x_t, dInterpolant, gdot_z
 
 
 def build_t_grid(
@@ -359,7 +366,8 @@ def sde_sample_forward_conditional(
     t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
     dt = 1.0 / n_infer_steps
 
-    def body_fn(i, state):
+    # Makes use of Euler–Maruyama to integrate the SDE
+    def euler_maruyama(i, state):
         X, key = state
         key, sub = jax.random.split(key)
         t_i = jnp.broadcast_to(t_grid[i], (B,))
@@ -372,7 +380,7 @@ def sde_sample_forward_conditional(
         X_next = X + bF * dt + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
         return (X_next, key)
 
-    X, _ = jax.lax.fori_loop(0, n_infer_steps, body_fn, (X, key))
+    X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
     return X
 
 
@@ -396,7 +404,8 @@ def sde_sample_forward_cfg(
     t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
     dt = 1.0 / n_infer_steps
 
-    def body_fn(i, state):
+    # Makes use of Euler–Maruyama to integrate the SDE
+    def euler_maruyama(i, state):
         X, key = state
         key, sub = jax.random.split(key)
         t_i = jnp.broadcast_to(t_grid[i], (B,))
@@ -417,27 +426,41 @@ def sde_sample_forward_cfg(
         X_next = X + bF * dt + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
         return (X_next, key)
 
-    X, _ = jax.lax.fori_loop(0, n_infer_steps, body_fn, (X, key))
+    X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
     return X
 
 
 def random_crops(x: jnp.ndarray, crop: int, key: jax.Array) -> jnp.ndarray:
+    """
+    JIT-safe random crop.
+    x: (B, H, W, C)
+    crop: Python int (static)
+    returns: (B, crop, crop, C)
+    """
     B, H, W, C = x.shape
+
+    # ensure sizes are static Python ints for dynamic_slice
+    crop = int(crop)
+    if crop > H or crop > W:
+        raise ValueError(f"crop={crop} exceeds input size {(H, W)}")
+
     key_h, key_w = jax.random.split(key)
+    # dynamic starts are fine
     hs = jax.random.randint(key_h, (B,), 0, H - crop + 1)
     ws = jax.random.randint(key_w, (B,), 0, W - crop + 1)
 
-    def do_crop(i, xi):
-        h0 = hs[i]
-        w0 = ws[i]
-        return xi[h0 : h0 + crop, w0 : w0 + crop, :]
+    def do_crop(xi, h0, w0):
+        # dynamic starts; static sizes
+        return lax.dynamic_slice(xi, (h0, w0, 0), (crop, crop, C))
 
-    return jax.vmap(do_crop, in_axes=(0, 0))(jnp.arange(B), x)
+    # vmap over batch
+    return jax.vmap(do_crop, in_axes=(0, 0, 0))(x, hs, ws)
 
 
 def maybe_hflip(x: jnp.ndarray, p: float, key: jax.Array) -> jnp.ndarray:
     flip = jax.random.bernoulli(key, p, (x.shape[0],))
-    return jnp.where(flip[:, None, None, None], jnp.flip(x, axis=2), x)  # flip width
+    flipped = lax.rev(x, dimensions=(2,))  # reverse width axis
+    return jnp.where(flip[:, None, None, None], flipped, x)
 
 
 def wandb_image_panel(
@@ -454,10 +477,130 @@ def wandb_image_panel(
             img = img[..., 0]
         return img
 
-    imgs: list = []
+    imgs: list[np.ndarray] = []
     B = min(max_items, inputs.shape[0])
     for i in range(B):
         imgs.append(wandb.Image(_to_uint8_linear(inputs[i]), caption=f"in[{i}]"))
         imgs.append(wandb.Image(_to_uint8_linear(targets[i]), caption=f"tgt[{i}]"))
         imgs.append(wandb.Image(_to_uint8_linear(preds[i]), caption=f"gen[{i}]"))
     return imgs
+
+
+def mae(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    return jnp.mean(jnp.abs(x - y))
+
+
+def mse(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    return jnp.mean((x - y) ** 2)
+
+
+def rmse(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    return jnp.sqrt(mse(x, y))
+
+
+def psnr(x: jnp.ndarray, y: jnp.ndarray, data_range: float | None = None) -> jnp.ndarray:
+    # If inputs already normalized, set data_range=1.0
+    if data_range is None:
+        mx = jnp.max(jnp.stack([x, y]))
+        mn = jnp.min(jnp.stack([x, y]))
+        data_range = jnp.maximum(mx - mn, 1e-8)
+    err = mse(x, y)
+    return 20.0 * jnp.log10(data_range) - 10.0 * jnp.log10(jnp.maximum(err, 1e-12))
+
+
+def ssim_2d(
+    x: jnp.ndarray, y: jnp.ndarray, C1: float = 0.01**2, C2: float = 0.03**2
+) -> jnp.ndarray:
+    # x,y: (H,W) or (H,W,1). Simple global-mean SSIM (no window) for speed.
+    if x.ndim == 3 and x.shape[-1] == 1:
+        x = x[..., 0]
+        y = y[..., 0]
+    mu_x = jnp.mean(x)
+    mu_y = jnp.mean(y)
+    sigma_x = jnp.var(x)
+    sigma_y = jnp.var(y)
+    sigma_xy = jnp.mean((x - mu_x) * (y - mu_y))
+    num = (2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)
+    den = (mu_x**2 + mu_y**2 + C1) * (sigma_x + sigma_y + C2)
+    return num / jnp.maximum(den, 1e-12)
+
+
+def batch_metrics(pred: jnp.ndarray, tgt: jnp.ndarray) -> dict[str, jnp.ndarray]:
+    # pred,tgt: (B,H,W,1)
+    ps = jax.vmap(psnr)(pred, tgt)
+    ss = jax.vmap(ssim_2d)(pred[..., 0], tgt[..., 0])
+    me = jax.vmap(mse)(pred, tgt)
+    ma = jax.vmap(mae)(pred, tgt)
+    return {
+        "psnr": jnp.mean(ps),
+        "ssim": jnp.mean(ss),
+        "mse": jnp.mean(me),
+        "mae": jnp.mean(ma),
+    }
+
+
+def _fft_power_2d(x: jnp.ndarray) -> jnp.ndarray:
+    """x: (H,W) or (H,W,1) real → return |FFT|^2 over full 2D (H,W)."""
+    if x.ndim == 3 and x.shape[-1] == 1:
+        x = x[..., 0]
+    # remove mean to avoid an overwhelming DC spike
+    x = x - jnp.mean(x)
+    F = jnp.fft.fftn(x, s=x.shape, norm="ortho")
+    P = F.real**2 + F.imag**2
+    return P  # (H,W)
+
+
+def _radial_bins(h: int, w: int, nbins: int) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Precompute integer bin ids per (i,j) pixel for radial averaging."""
+    # frequency coordinates on [-0.5, 0.5) after fftshift
+    ky = jnp.fft.fftfreq(h)  # shape (H,)
+    kx = jnp.fft.fftfreq(w)  # shape (W,)
+    KX, KY = jnp.meshgrid(kx, ky, indexing="xy")
+    r = jnp.sqrt(KX**2 + KY**2)  # radial frequency
+    r = jnp.fft.fftshift(r)  # match power after fftshift
+
+    # uniform bins from 0 to Nyquist (max radius)
+    rmax = jnp.max(r)
+    edges = jnp.linspace(0.0, rmax, nbins + 1)
+    # digitize → bin ids in [0, nbins-1]
+    ids = jnp.digitize(r.ravel(), edges) - 1
+    ids = jnp.clip(ids, 0, nbins - 1)
+    return ids.astype(jnp.int32), edges
+
+
+def radial_power_spectrum(x: jnp.ndarray, nbins: int = 64) -> jnp.ndarray:
+    """
+    Compute isotropic 1D power spectrum by radial binning of |FFT|^2.
+    x: (H,W,1) or (H,W)
+    returns: (nbins,) spectrum (mean power per radial bin), normalized.
+    """
+    H, W = x.shape[:2]
+    P = jnp.fft.fftshift(_fft_power_2d(x))  # (H,W)
+    ids, _ = _radial_bins(H, W, nbins)  # (H*W,), static given H,W,nbins
+    vals = P.ravel()
+    # bin means using segment sums
+    counts = jnp.bincount(ids, length=nbins)
+    sums = jnp.bincount(ids, weights=vals, length=nbins)
+    spec = sums / jnp.maximum(counts, 1)
+    # stabilize dynamic range: log-spectrum and mean-normalize
+    spec = jnp.log1p(spec)
+    spec = spec / jnp.maximum(jnp.mean(spec), 1e-8)
+    return spec  # (nbins,)
+
+
+def batch_spectrum_loss(pred: jnp.ndarray, target: jnp.ndarray, nbins: int = 64) -> jnp.ndarray:
+    """
+    pred/target: (B,H,W,1) or (B,H,W,C) → average spectral MSE over channels.
+    """
+    B, H, W, C = pred.shape
+
+    def spec_ch(p, t):
+        # average channels’ spectra (or sum and normalize equivalently)
+        def per_ch(pc, tc):
+            sp = radial_power_spectrum(pc, nbins)
+            st = radial_power_spectrum(tc, nbins)
+            return jnp.mean((sp - st) ** 2)
+
+        return jnp.mean(jax.vmap(per_ch)(jnp.moveaxis(p, -1, 0), jnp.moveaxis(t, -1, 0)))
+
+    return jnp.mean(jax.vmap(spec_ch)(pred, target))  # scalar

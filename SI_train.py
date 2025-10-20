@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from collections import deque
 from pathlib import Path
 
 import flax.nnx as nnx
@@ -9,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 import optax
+from dotenv import load_dotenv
 from tqdm.auto import tqdm
 
 import wandb
@@ -16,6 +18,7 @@ import wandb
 # Project imports
 from src.interpolants import StochasticInterpolantModel
 from src.utils import (
+    batch_metrics,
     delete_checkpoint,
     make_train_test_loaders,
     make_xt_and_targets,
@@ -31,6 +34,10 @@ from src.utils import (
 # ---------------------------
 # Loss (velocity + denoiser)
 # ---------------------------
+
+
+def ema_update(prev: float | None, x: float, beta: float = 0.98) -> float:
+    return x if prev is None else (beta * prev + (1 - beta) * x)
 
 
 def si_losses(
@@ -62,7 +69,9 @@ def si_losses(
     reduce = lambda y: jnp.sum(y, axis=(1, 2, 3))  # NHWC
     lb = 0.5 * reduce(b_hat**2) - reduce((dI + gdot_z) * b_hat)
     leta = 0.5 * reduce(eta_hat**2) - reduce(z * eta_hat)
+
     loss = jnp.mean(lb + leta)
+
     return {"loss": loss, "lb": jnp.mean(lb), "leta": jnp.mean(leta)}
 
 
@@ -169,7 +178,9 @@ def train(args: argparse.Namespace):
         wandb.require("core")
         wandb.init(
             project=args.wandb_proj_name,
+            entity="aarondinesh2002-epfl",
             name=args.wandb_run_name,
+            mode="online",
             config=dict(
                 batch_size=args.batch_size,
                 g_lr=args.g_lr,
@@ -193,6 +204,10 @@ def train(args: argparse.Namespace):
     eval_steps_per_epoch = math.ceil(n_test / args.batch_size)
     global_step = 0
     best_val = float("inf")
+    _loss_ema = None
+
+    _loss_buffer = deque(maxlen=max(2, args.plateau_window + 1))  # store (global_step, loss)
+    _plateau_triggered = False
 
     # Epochs
     train_key = random.fold_in(data_key, 0)
@@ -220,6 +235,59 @@ def train(args: argparse.Namespace):
                 )
                 if args.use_wandb:
                     wandb.log(log, step=global_step)
+
+            # Add the loss to the queue for plateau detection
+            _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)
+            _loss_buffer.append((global_step, _loss_ema))
+
+            if (
+                global_step >= args.plateau_warmup
+                and epoch >= args.plateau_min_epochs
+                and len(_loss_buffer) > args.plateau_window
+            ):
+                # current loss and the loss about k steps ago
+                cur_step, cur_loss = _loss_buffer[-1]
+                # find the oldest entry that is at least plateau_window steps behind
+                # (deque may not have every step if you change maxlen; here we sized it to have enough)
+                old_idx = -1
+                # binary/linear search isn’t needed; the buffer is short
+                for i in range(len(_loss_buffer) - 1, -1, -1):
+                    s, _ = _loss_buffer[i]
+                    if cur_step - s >= args.plateau_window:
+                        old_idx = i
+                        break
+                if old_idx != -1:
+                    old_step, old_loss = _loss_buffer[old_idx]
+                    denom = abs(old_loss) + 1e-12
+                    rel_impr = abs(cur_loss - old_loss) / denom
+
+                    # log the plateau signal
+                    if args.use_wandb:
+                        wandb.log({"train/plateau_rel_impr": rel_impr}, step=global_step)
+
+                    # stop if relative improvement is below threshold
+                    if rel_impr < args.plateau_threshold:
+                        print(
+                            f"[PlateauStop] No sufficient improvement over "
+                            f"{args.plateau_window} steps (Δrel={rel_impr:.6g} < {args.plateau_threshold}). "
+                            f"Stopping at epoch {epoch}, step {global_step}."
+                        )
+                        # save a final checkpoint before stopping
+                        save_checkpoint(
+                            checkpoint_dir=args.checkpoint_dir,
+                            epoch=epoch,
+                            step=global_step,
+                            model=model,
+                            optimizer=optimizer,
+                            alt_name="PLATEAU_STOP",
+                            data_stats={"cosmos_mu": cosmos_mu, "cosmos_sigma": cosmos_sigma},
+                        )
+                        _plateau_triggered = True
+
+                if _plateau_triggered:
+                    if args.use_wandb:
+                        wandb.finish()
+                        return  # exit train() early
 
         # CHECKPOINT (store cosmos stats too, for completeness)
         if epoch % args.ckpt_every == 0:
@@ -290,8 +358,16 @@ def train(args: argparse.Namespace):
             f"[Eval  e{epoch:03d}] loss={eval_avg['loss']:.4f} "
             f"lb={eval_avg['lb']:.4f} leta={eval_avg['leta']:.4f}"
         )
+
         if args.use_wandb:
             wandb.log({f"val/{k}": v for k, v in eval_avg.items()}, step=global_step)
+
+        mets = batch_metrics(gen, x1)
+        if args.use_wandb:
+            wandb.log({f"val/{k}": float(v) for k, v in mets.items()}, step=global_step)
+        print(
+            f"PSNR={float(mets['psnr']):.2f}dB  SSIM={float(mets['ssim']):.3f}  RMSE={float(jnp.sqrt(mets['mse'])):.4f}"
+        )
 
         # Save best-by-loss
         if eval_avg["loss"] < best_val:
@@ -328,7 +404,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--output-maps", required=True)
     p.add_argument("--cosmos-params", required=True)
     p.add_argument("--test-ratio", type=float, default=0.2)
-    p.add_argument("--transform-name", default="signed_log1p")
+    p.add_argument("--transform-name", default="log10")
 
     # model
     p.add_argument("--img-channels", type=int, default=1)
@@ -341,15 +417,27 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--a-gamma", type=float, default=1.0)
 
     # training
-    p.add_argument("--epochs", type=int, default=150)
+    p.add_argument("--epochs", type=int, default=150000)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--crop-size", type=int, default=128)
     p.add_argument("--g-lr", type=float, default=2e-4)
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--cfg-drop-p", type=float, default=0.1)
-    p.add_argument("--log-rate", type=int, default=50)
+    p.add_argument("--log-rate", type=int, default=5)
     p.add_argument("--ckpt-every", type=int, default=10)
     p.add_argument("--seed", type=int, default=0)
+
+    # fmt: off
+    # Early Stopping (Loss Plateau Detection)
+    p.add_argument("--plateau-window", type=int, default=1000,
+        help="k: compare current loss to loss k steps ago")
+    p.add_argument("--plateau-threshold", type=float, default=1e-3,
+        help="relative improvement threshold; e.g. 1e-3 = 0.1%")
+    p.add_argument("--plateau-warmup", type=int, default=2000,
+        help="don’t check plateau until this many global steps")
+    p.add_argument("--plateau-min-epochs", type=int, default=3,
+        help="require at least this many epochs before allowing plateau stop")
+    # fmt: on
 
     # sampler
     p.add_argument("--n-infer-steps", type=int, default=300)
@@ -371,6 +459,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
+    load_dotenv()
     parser = build_argparser()
     args = parser.parse_args()
     Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
