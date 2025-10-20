@@ -113,7 +113,7 @@ def make_optim_and_steps(args: argparse.Namespace):
         )
         return optimizer, model, metrics
 
-    @jax.jit
+    @jax.jit(donate_argnums=(1,))  # donate the batch (arg index 1)
     def eval_step(
         model: StochasticInterpolantModel,
         batch: dict[str, jnp.ndarray],

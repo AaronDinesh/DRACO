@@ -25,8 +25,8 @@ def make_train_test_loaders(
     test_ratio: float = 0.2,
     transform_name: TransformName = "signed_log1p",
 ):
-    input_maps = jnp.load(input_data_path, mmap_mode="r")
-    output_maps = jnp.load(output_data_path, mmap_mode="r")
+    input_maps = np.load(input_data_path, mmap_mode="r")
+    output_maps = np.load(output_data_path, mmap_mode="r")
     cosmos_params = pd.read_csv(csv_path, header=None, sep=" ")
 
     repeat_factor: int = input_maps.shape[0] // len(cosmos_params)
@@ -80,9 +80,9 @@ def make_train_test_loaders(
             batch = shuffled_idx[s : s + batch_size]
 
             yield {
-                "inputs": forward_transform(_add_channel_last(input_maps[batch])),
-                "targets": forward_transform(_add_channel_last(output_maps[batch])),
-                "params": _standardize_params(cosmos_params[batch], mu=mu, sigma=sigma),
+                "inputs": jnp.asarray(forward_transform(_add_channel_last(input_maps[batch]))).astype(jnp.float32),
+                "targets": jnp.asarray(forward_transform(_add_channel_last(output_maps[batch]))).astype(jnp.float32),
+                "params": jnp.asarray(_standardize_params(cosmos_params[batch], mu=mu, sigma=sigma)).astype(jnp.float32),
             }
 
     def train_loader(key: Array | None = None, drop_last: bool = False):
