@@ -81,8 +81,22 @@ def si_losses(
 # ---------------------------
 
 
-def make_optim_and_steps(args: argparse.Namespace):
+def make_optim_and_steps(args: argparse.Namespace, n_train: int):
+    total_steps = math.ceil(n_train / args.batch_size) * args.epochs
     # tx = optax.adamw(learning_rate=args.g_lr, weight_decay=args.weight_decay)
+    schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=7.5e-5,
+        warmup_steps=5_000,
+        decay_steps=-total_steps - 5_000,
+        end_value=1e-6,
+    )
+    tx = optax.chain(
+        optax.scale_by_adafactor(),
+        optax.scale_by_schedule(schedule),
+        optax.add_decayed_weights(args.weight_decay),
+    )
+
     tx = optax.adafactor(
         learning_rate=args.g_lr,
         multiply_by_parameter_scale=False,
@@ -110,7 +124,9 @@ def make_optim_and_steps(args: argparse.Namespace):
                 m, x0, x1, cond, keytz, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
             )
 
-            return metrics["loss"], metrics  # Return loss and then metrics as auxiliary return
+            return metrics[
+                "loss"
+            ], metrics  # Return loss and then metrics as auxiliary return
 
         (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
         optimizer.update(model, grads)
@@ -124,7 +140,9 @@ def make_optim_and_steps(args: argparse.Namespace):
         key: jax.Array,
     ):
         x0, x1, cond = batch["inputs"], batch["targets"], batch["params"]
-        return si_losses(model, x0, x1, cond, key, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p)
+        return si_losses(
+            model, x0, x1, cond, key, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
+        )
 
     return tx, train_step, eval_step
 
@@ -171,7 +189,7 @@ def train(args: argparse.Namespace):
         rngs=rngs,
     )
 
-    tx, train_step, eval_step = make_optim_and_steps(args)
+    tx, train_step, eval_step = make_optim_and_steps(args, n_train)
     optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
     # Optional restore
@@ -211,7 +229,9 @@ def train(args: argparse.Namespace):
     best_val = float("inf")
     _loss_ema = None
 
-    _loss_buffer = deque(maxlen=max(2, args.plateau_window + 1))  # store (global_step, loss)
+    _loss_buffer = deque(
+        maxlen=max(2, args.plateau_window + 1)
+    )  # store (global_step, loss)
     _plateau_triggered = False
 
     # Epochs
@@ -232,7 +252,9 @@ def train(args: argparse.Namespace):
             global_step += 1
 
             if step % args.log_rate == 0 or step == train_steps_per_epoch:
-                log = {f"train/{k}": float(jax.device_get(v)) for k, v in metrics.items()}
+                log = {
+                    f"train/{k}": float(jax.device_get(v)) for k, v in metrics.items()
+                }
                 log.update({"epoch": epoch, "step": global_step})
                 print(
                     f"[Train e{epoch:03d} s{step:04d}] "
@@ -242,7 +264,9 @@ def train(args: argparse.Namespace):
                     wandb.log(log, step=global_step)
 
             # Add the loss to the queue for plateau detection
-            _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)
+            _loss_ema = ema_update(
+                _loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98
+            )
             _loss_buffer.append((global_step, _loss_ema))
 
             if (
@@ -268,7 +292,9 @@ def train(args: argparse.Namespace):
 
                     # log the plateau signal
                     if args.use_wandb:
-                        wandb.log({"train/plateau_rel_impr": rel_impr}, step=global_step)
+                        wandb.log(
+                            {"train/plateau_rel_impr": rel_impr}, step=global_step
+                        )
 
                     # stop if relative improvement is below threshold
                     if rel_impr < args.plateau_threshold:
@@ -285,7 +311,10 @@ def train(args: argparse.Namespace):
                             model=model,
                             optimizer=optimizer,
                             alt_name="PLATEAU_STOP",
-                            data_stats={"cosmos_mu": cosmos_mu, "cosmos_sigma": cosmos_sigma},
+                            data_stats={
+                                "cosmos_mu": cosmos_mu,
+                                "cosmos_sigma": cosmos_sigma,
+                            },
                         )
                         _plateau_triggered = True
 
@@ -424,7 +453,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--epochs", type=int, default=150000)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--crop-size", type=int, default=256)
-    p.add_argument("--g-lr", type=float, default=2e-4)
+    p.add_argument("--g-lr", type=float, default=5e-5)
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--cfg-drop-p", type=float, default=0.1)
     p.add_argument("--log-rate", type=int, default=5)
@@ -450,7 +479,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--eps0", type=float, default=0.1)
     p.add_argument("--eps-taper", type=float, default=0.6)
     p.add_argument("--endpoint-clip", type=float, default=1e-3)
-    p.add_argument("--t-schedule", choices=["linear", "cosine", "power"], default="cosine")
+    p.add_argument(
+        "--t-schedule", choices=["linear", "cosine", "power"], default="cosine"
+    )
     p.add_argument("--t-power", type=float, default=2.0)
 
     # checkpoints & wandb
