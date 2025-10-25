@@ -82,9 +82,14 @@ def si_losses(
 
 
 def make_optim_and_steps(args: argparse.Namespace):
-    tx = optax.adamw(learning_rate=args.g_lr, weight_decay=args.weight_decay)
+    # tx = optax.adamw(learning_rate=args.g_lr, weight_decay=args.weight_decay)
+    tx = optax.adafactor(
+        learning_rate=args.g_lr,
+        multiply_by_parameter_scale=False,
+        weight_decay_rate=args.weight_decay,
+    )
 
-    @jax.jit
+    @partial(jax.jit, donate_argnums=(2,))
     def train_step(
         optimizer: nnx.Optimizer,
         model: StochasticInterpolantModel,
@@ -101,17 +106,15 @@ def make_optim_and_steps(args: argparse.Namespace):
         x1 = maybe_hflip(x1, 0.5, keyf)
 
         def loss_fn(m: StochasticInterpolantModel) -> jnp.ndarray:
-            return si_losses(
+            metrics = si_losses(
                 m, x0, x1, cond, keytz, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
-            )["loss"]
+            )
 
-        grads = nnx.grad(loss_fn, argnums=nnx.DiffState(0, nnx.Param))(model)
+            return metrics["loss"], metrics  # Return loss and then metrics as auxiliary return
+
+        (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
         optimizer.update(model, grads)
 
-        # Fresh metrics without grads
-        metrics = si_losses(
-            model, x0, x1, cond, keytz, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
-        )
         return optimizer, model, metrics
 
     @partial(jax.jit, donate_argnums=(1,))
@@ -158,15 +161,16 @@ def train(args: argparse.Namespace):
 
     # Model + optimizer
     rngs = nnx.Rngs(args.seed)
+
     model = StochasticInterpolantModel(
         in_channels=args.img_channels,
         base_channels=args.base_channels,
-        cond_in_dim=int(cond_dim),
-        time_dim=args.time_dim,
-        cond_dim=args.cond_dim,
-        num_heads=args.num_heads,
+        cosmology_dim=int(cond_dim),
+        time_embedding_dim=args.time_dim,
+        fused_cond_dim=args.cond_dim,
         rngs=rngs,
     )
+
     tx, train_step, eval_step = make_optim_and_steps(args)
     optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
@@ -412,7 +416,6 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--base-channels", type=int, default=96)
     p.add_argument("--time-dim", type=int, default=128)
     p.add_argument("--cond-dim", type=int, default=256)
-    p.add_argument("--num-heads", type=int, default=4)
 
     # SI
     p.add_argument("--a-gamma", type=float, default=1.0)
