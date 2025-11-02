@@ -451,6 +451,18 @@ def main(parser: argparse.ArgumentParser):
         condition_proj_dim=8,
     )
 
+
+    params = nnx.state(generator, nnx.Param)
+    total_params_gen = sum(jnp.prod(x.shape) for x in jax.tree_util.tree_leaves(params))
+
+    params_disc = nnx.state(discriminator, nnx.Param)
+    total_params_disc = sum(np.prod(x.shape) for x in jax.tree_util.tree_leaves(params_disc))
+
+    print(f"Total Gen: {total_params_gen}")
+    print(f"Total Disc: {total_params_disc}")
+
+    return
+
     print("----- Creating Optimizers -----")
     opt_gen = nnx.Optimizer(
         generator,

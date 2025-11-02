@@ -83,27 +83,24 @@ def si_losses(
 
 def make_optim_and_steps(args: argparse.Namespace, n_train: int):
     total_steps = math.ceil(n_train / args.batch_size) * args.epochs
+    warmup_steps = int(total_steps * 0.1)
     # tx = optax.adamw(learning_rate=args.g_lr, weight_decay=args.weight_decay)
     schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
-        peak_value=7.5e-5,
-        warmup_steps=5_000,
-        decay_steps=-total_steps - 5_000,
+        peak_value=args.g_lr,
+        warmup_steps=warmup_steps,
+        decay_steps=total_steps - warmup_steps,
         end_value=1e-6,
-    )
-    tx = optax.chain(
-        optax.scale_by_adafactor(),
-        optax.scale_by_schedule(schedule),
-        optax.add_decayed_weights(args.weight_decay),
     )
 
     tx = optax.adafactor(
-        learning_rate=args.g_lr,
+        learning_rate=schedule,        # schedule or a fixed float
         multiply_by_parameter_scale=False,
         weight_decay_rate=args.weight_decay,
     )
 
-    @partial(jax.jit, donate_argnums=(2,))
+
+    # @partial(jax.jit, donate_argnums=(2,))
     def train_step(
         optimizer: nnx.Optimizer,
         model: StochasticInterpolantModel,
@@ -124,25 +121,21 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
                 m, x0, x1, cond, keytz, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
             )
 
-            return metrics[
-                "loss"
-            ], metrics  # Return loss and then metrics as auxiliary return
+            return metrics["loss"], metrics  # Return loss and then metrics as auxiliary return
 
         (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
         optimizer.update(model, grads)
 
         return optimizer, model, metrics
 
-    @partial(jax.jit, donate_argnums=(1,))
+    # @partial(jax.jit, donate_argnums=(1,))
     def eval_step(
         model: StochasticInterpolantModel,
         batch: dict[str, jnp.ndarray],
         key: jax.Array,
     ):
         x0, x1, cond = batch["inputs"], batch["targets"], batch["params"]
-        return si_losses(
-            model, x0, x1, cond, key, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
-        )
+        return si_losses(model, x0, x1, cond, key, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p)
 
     return tx, train_step, eval_step
 
@@ -229,9 +222,7 @@ def train(args: argparse.Namespace):
     best_val = float("inf")
     _loss_ema = None
 
-    _loss_buffer = deque(
-        maxlen=max(2, args.plateau_window + 1)
-    )  # store (global_step, loss)
+    _loss_buffer = deque(maxlen=max(2, args.plateau_window + 1))  # store (global_step, loss)
     _plateau_triggered = False
 
     # Epochs
@@ -252,9 +243,7 @@ def train(args: argparse.Namespace):
             global_step += 1
 
             if step % args.log_rate == 0 or step == train_steps_per_epoch:
-                log = {
-                    f"train/{k}": float(jax.device_get(v)) for k, v in metrics.items()
-                }
+                log = {f"train/{k}": float(jax.device_get(v)) for k, v in metrics.items()}
                 log.update({"epoch": epoch, "step": global_step})
                 print(
                     f"[Train e{epoch:03d} s{step:04d}] "
@@ -264,9 +253,7 @@ def train(args: argparse.Namespace):
                     wandb.log(log, step=global_step)
 
             # Add the loss to the queue for plateau detection
-            _loss_ema = ema_update(
-                _loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98
-            )
+            _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)
             _loss_buffer.append((global_step, _loss_ema))
 
             if (
@@ -292,9 +279,7 @@ def train(args: argparse.Namespace):
 
                     # log the plateau signal
                     if args.use_wandb:
-                        wandb.log(
-                            {"train/plateau_rel_impr": rel_impr}, step=global_step
-                        )
+                        wandb.log({"train/plateau_rel_impr": rel_impr}, step=global_step)
 
                     # stop if relative improvement is below threshold
                     if rel_impr < args.plateau_threshold:
@@ -479,9 +464,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--eps0", type=float, default=0.1)
     p.add_argument("--eps-taper", type=float, default=0.6)
     p.add_argument("--endpoint-clip", type=float, default=1e-3)
-    p.add_argument(
-        "--t-schedule", choices=["linear", "cosine", "power"], default="cosine"
-    )
+    p.add_argument("--t-schedule", choices=["linear", "cosine", "power"], default="cosine")
     p.add_argument("--t-power", type=float, default=2.0)
 
     # checkpoints & wandb
@@ -499,3 +482,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
     train(args)
+    jax.profiler.save_device_memory_profile("memory.prof")
