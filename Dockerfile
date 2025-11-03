@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/jax:25.01-py3
+FROM nvcr.io/nvidia/jax:25.10-py3
 
 ENV DEBIAN_FRONTEND=noninteractive
 
