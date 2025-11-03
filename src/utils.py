@@ -60,7 +60,9 @@ def make_train_test_loaders(
     # This ensures that there is no data leakage
     assert len(jnp.intersect1d(train_idx, test_idx)) == 0
 
-    def _standardize_params(x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
+    def _standardize_params(
+        x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray
+    ) -> jnp.ndarray:
         return (x - mu) / sigma
 
     def _add_channel_last(x: jnp.ndarray):
@@ -167,7 +169,9 @@ def make_transform(
 
             tiny = jnp.finfo(x.dtype).tiny
             g = jnp.log(jnp.maximum(x, tiny))  # (B,H,W,C)
-            g_min = jnp.min(g, axis=reduce_axes, keepdims=True)  # (B,1,1,C) or (B,1,1,1)
+            g_min = jnp.min(
+                g, axis=reduce_axes, keepdims=True
+            )  # (B,1,1,C) or (B,1,1,1)
             y = (g - g_min) * inv_ln10  # base-10, min->0
             return y
 
@@ -294,7 +298,9 @@ def save_checkpoint(
     _STD_CHKPTR.save(str(save_path), payload)
 
 
-def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer):  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
+def restore_checkpoint(
+    checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer
+):  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
     checkpoint = _STD_CHKPTR.restore(checkpoint_path)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
@@ -324,7 +330,9 @@ def gamma_and_deriv(
 def make_xt_and_targets(
     x0: jnp.ndarray, x1: jnp.ndarray, z: jnp.ndarray, time: jnp.ndarray, a: float = 1.0
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    interpolant = (1.0 - time)[:, None, None, None] * x0 + time[:, None, None, None] * x1
+    interpolant = (1.0 - time)[:, None, None, None] * x0 + time[
+        :, None, None, None
+    ] * x1
     gamma, gamma_dot = gamma_and_deriv(time, a=a)
     x_t = interpolant + gamma[:, None, None, None] * z
     dInterpolant = x1 - x0
@@ -333,7 +341,10 @@ def make_xt_and_targets(
 
 
 def build_t_grid(
-    n_steps: int, endpoint_clip: float = 1e-3, schedule: str = "cosine", power: float = 2.0
+    n_steps: int,
+    endpoint_clip: float = 1e-3,
+    schedule: str = "cosine",
+    power: float = 2.0,
 ) -> jnp.ndarray:
     if schedule == "linear":
         t = jnp.linspace(0.0 + endpoint_clip, 1.0 - endpoint_clip, n_steps)
@@ -349,7 +360,9 @@ def build_t_grid(
     return t
 
 
-def epsilon_schedule(t: jnp.ndarray, eps0: float = 0.1, taper: float = 0.6) -> jnp.ndarray:
+def epsilon_schedule(
+    t: jnp.ndarray, eps0: float = 0.1, taper: float = 0.6
+) -> jnp.ndarray:
     return eps0 * (t * (1.0 - t)) ** taper
 
 
@@ -383,7 +396,11 @@ def sde_sample_forward_conditional(
         s_hat = -eta_hat / gamma_i[:, None, None, None]
         bF = b_hat + eps_i[:, None, None, None] * s_hat
         noise = jax.random.normal(sub, X.shape)
-        X_next = X + bF * dt + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
+        X_next = (
+            X
+            + bF * dt
+            + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
+        )
         return (X_next, key)
 
     X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
@@ -404,7 +421,6 @@ def sde_sample_forward_cfg(
     t_power: float = 2.0,
     key: jax.Array | None = None,
 ) -> jnp.ndarray:
-    key = key or jax.random.PRNGKey(0)
     B = x0.shape[0]
     X = x0
     t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
@@ -429,7 +445,11 @@ def sde_sample_forward_cfg(
         bF = b_hat + eps_i[:, None, None, None] * s_hat
 
         noise = jax.random.normal(sub, X.shape)
-        X_next = X + bF * dt + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
+        X_next = (
+            X
+            + bF * dt
+            + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
+        )
         return (X_next, key)
 
     X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
@@ -470,7 +490,11 @@ def maybe_hflip(x: jnp.ndarray, p: float, key: jax.Array) -> jnp.ndarray:
 
 
 def wandb_image_panel(
-    wandb, inputs: jnp.ndarray, targets: jnp.ndarray, preds: jnp.ndarray, max_items: int = 3
+    wandb,
+    inputs: jnp.ndarray,
+    targets: jnp.ndarray,
+    preds: jnp.ndarray,
+    max_items: int = 3,
 ):
     def _to_uint8_linear(x: jnp.ndarray):
         lo = jnp.percentile(x, 1.0)
@@ -504,7 +528,9 @@ def rmse(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     return jnp.sqrt(mse(x, y))
 
 
-def psnr(x: jnp.ndarray, y: jnp.ndarray, data_range: float | None = None) -> jnp.ndarray:
+def psnr(
+    x: jnp.ndarray, y: jnp.ndarray, data_range: float | None = None
+) -> jnp.ndarray:
     # If inputs already normalized, set data_range=1.0
     if data_range is None:
         mx = jnp.max(jnp.stack([x, y]))
@@ -595,7 +621,9 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
 
     # Central value of each bin
     # kavg = (kedges[1:] + kedges[:-1]) / 2
-    kavg = np.bincount(dig, weights=kmesh.reshape(-1), minlength=len(kedges) + 1) / kcount
+    kavg = (
+        np.bincount(dig, weights=kmesh.reshape(-1), minlength=len(kedges) + 1) / kcount
+    )
     kavg = kavg[1:-1]
 
     if los is None:
