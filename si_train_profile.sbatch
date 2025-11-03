@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=gan_test_adinesh
 #SBATCH --time=00:30:00
-#SBATCH --environment=GAN
+#SBATCH --environment=/users/adinesh/DRACO/GAN.toml
 #SBATCH --account=sk030
 #SBATCH -G 1
 #SBATCH --output=/users/adinesh/DRACO/logs/test_gan_out_%j.log
@@ -11,5 +11,6 @@
 RUN_NUMBER=$1
 
 cd /users/adinesh/DRACO
-source .venv/bin/activate
-uv run SI_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mtot_IllustrisTNG_SB28_z=0.00.npy --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt --checkpoint-dir=/capstor/store/cscs/ska/sk030/si_checkpoints/Mtot/run_${RUN_NUMBER} --wandb-run-name=nnx-si-256-run-Mtot-${RUN_NUMBER} --batch-size=6 --epochs=1
+nvidia-smi
+pip list
+python SI_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mtot_IllustrisTNG_SB28_z=0.00.npy --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt --checkpoint-dir=/capstor/store/cscs/ska/sk030/si_checkpoints/Mtot/run_${RUN_NUMBER} --wandb-run-name=nnx-si-256-run-Mtot-${RUN_NUMBER} --batch-size=8 --epochs=1

@@ -99,7 +99,7 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
         weight_decay_rate=args.weight_decay,
     )
 
-    # @partial(jax.jit, donate_argnums=(2,))
+    @partial(jax.jit, donate_argnums=(2,))
     def train_step(
         optimizer: nnx.Optimizer,
         model: StochasticInterpolantModel,
@@ -120,25 +120,21 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
                 m, x0, x1, cond, keytz, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
             )
 
-            return metrics[
-                "loss"
-            ], metrics  # Return loss and then metrics as auxiliary return
+            return metrics["loss"], metrics  # Return loss and then metrics as auxiliary return
 
         (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
         optimizer.update(model, grads)
 
         return optimizer, model, metrics
 
-    # @partial(jax.jit, donate_argnums=(1,))
+    @partial(jax.jit, donate_argnums=(1,))
     def eval_step(
         model: StochasticInterpolantModel,
         batch: dict[str, jnp.ndarray],
         key: jax.Array,
     ):
         x0, x1, cond = batch["inputs"], batch["targets"], batch["params"]
-        return si_losses(
-            model, x0, x1, cond, key, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
-        )
+        return si_losses(model, x0, x1, cond, key, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p)
 
     return tx, train_step, eval_step
 
@@ -225,9 +221,7 @@ def train(args: argparse.Namespace):
     best_val = float("inf")
     _loss_ema = None
 
-    _loss_buffer = deque(
-        maxlen=max(2, args.plateau_window + 1)
-    )  # store (global_step, loss)
+    _loss_buffer = deque(maxlen=max(2, args.plateau_window + 1))  # store (global_step, loss)
     _plateau_triggered = False
 
     # Epochs
@@ -247,16 +241,8 @@ def train(args: argparse.Namespace):
             step += 1
             global_step += 1
 
-            ##### Remove
-            if global_step == 200:
-                wandb.finish()
-                return
-            ############
-
             if step % args.log_rate == 0 or step == train_steps_per_epoch:
-                log = {
-                    f"train/{k}": float(jax.device_get(v)) for k, v in metrics.items()
-                }
+                log = {f"train/{k}": float(jax.device_get(v)) for k, v in metrics.items()}
                 log.update({"epoch": epoch, "step": global_step})
                 print(
                     f"[Train e{epoch:03d} s{step:04d}] "
@@ -266,9 +252,7 @@ def train(args: argparse.Namespace):
                     wandb.log(log, step=global_step)
 
             # Add the loss to the queue for plateau detection
-            _loss_ema = ema_update(
-                _loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98
-            )
+            _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)
             _loss_buffer.append((global_step, _loss_ema))
 
             if (
@@ -287,16 +271,14 @@ def train(args: argparse.Namespace):
                     if cur_step - s >= args.plateau_window:
                         old_idx = i
                         break
-                if old_idx != -1:
-                    old_step, old_loss = _loss_buffer[old_idx]
-                    denom = abs(old_loss) + 1e-12
-                    rel_impr = abs(cur_loss - old_loss) / denom
+                        if old_idx != -1:
+                            old_step, old_loss = _loss_buffer[old_idx]
+                            denom = abs(old_loss) + 1e-12
+                            rel_impr = abs(cur_loss - old_loss) / denom
 
                     # log the plateau signal
                     if args.use_wandb:
-                        wandb.log(
-                            {"train/plateau_rel_impr": rel_impr}, step=global_step
-                        )
+                        wandb.log({"train/plateau_rel_impr": rel_impr}, step=global_step)
 
                     # stop if relative improvement is below threshold
                     if rel_impr < args.plateau_threshold:
@@ -323,7 +305,7 @@ def train(args: argparse.Namespace):
                 if _plateau_triggered:
                     if args.use_wandb:
                         wandb.finish()
-                        return  # exit train() early
+                        return model, optimizer, cosmos_mu, cosmos_sigma  # exit train() early
 
         # CHECKPOINT (store cosmos stats too, for completeness)
         if epoch % args.ckpt_every == 0:
@@ -426,6 +408,8 @@ def train(args: argparse.Namespace):
     if args.use_wandb:
         wandb.finish()
 
+    return model, optimizer, cosmos_mu, cosmos_sigma
+
 
 # ---------------------------
 # CLI
@@ -481,9 +465,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--eps0", type=float, default=0.1)
     p.add_argument("--eps-taper", type=float, default=0.6)
     p.add_argument("--endpoint-clip", type=float, default=1e-3)
-    p.add_argument(
-        "--t-schedule", choices=["linear", "cosine", "power"], default="cosine"
-    )
+    p.add_argument("--t-schedule", choices=["linear", "cosine", "power"], default="cosine")
     p.add_argument("--t-power", type=float, default=2.0)
 
     # checkpoints & wandb
@@ -500,7 +482,14 @@ if __name__ == "__main__":
     parser = build_argparser()
     args = parser.parse_args()
     Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
-    train(args)
-    jax.profiler.save_device_memory_profile(
-        "/capstor/store/cscs/ska/sk030/si_checkpoints/memory.prof"
+    model, optimizer, cosmos_mu, cosmos_sigma = train(args)
+
+    save_checkpoint(
+        checkpoint_dir=args.checkpoint_dir,
+        epoch=None,
+        step=None,
+        model=model,
+        optimizer=optimizer,
+        alt_name=f"Final_model",
+        data_stats={"cosmos_mu": cosmos_mu, "cosmos_sigma": cosmos_sigma},
     )

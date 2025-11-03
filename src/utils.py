@@ -25,8 +25,8 @@ def make_train_test_loaders(
     test_ratio: float = 0.2,
     transform_name: TransformName = "signed_log1p",
 ):
-    input_maps = np.load(input_data_path, mmap_mode="r")
-    output_maps = np.load(output_data_path, mmap_mode="r")
+    input_maps = jnp.load(input_data_path, mmap_mode="r")
+    output_maps = jnp.load(output_data_path, mmap_mode="r")
     cosmos_params = pd.read_csv(csv_path, header=None, sep=" ")
 
     repeat_factor: int = input_maps.shape[0] // len(cosmos_params)
@@ -80,9 +80,15 @@ def make_train_test_loaders(
             batch = shuffled_idx[s : s + batch_size]
 
             yield {
-                "inputs": jnp.asarray(forward_transform(_add_channel_last(input_maps[batch]))).astype(jnp.float32),
-                "targets": jnp.asarray(forward_transform(_add_channel_last(output_maps[batch]))).astype(jnp.float32),
-                "params": jnp.asarray(_standardize_params(cosmos_params[batch], mu=mu, sigma=sigma)).astype(jnp.float32),
+                "inputs": jnp.asarray(
+                    forward_transform(_add_channel_last(input_maps[batch]))
+                ).astype(jnp.float32),
+                "targets": jnp.asarray(
+                    forward_transform(_add_channel_last(output_maps[batch]))
+                ).astype(jnp.float32),
+                "params": jnp.asarray(
+                    _standardize_params(cosmos_params[batch], mu=mu, sigma=sigma)
+                ).astype(jnp.float32),
             }
 
     def train_loader(key: Array | None = None, drop_last: bool = False):
@@ -258,8 +264,8 @@ def make_transform(
 
 def save_checkpoint(
     checkpoint_dir: str,
-    epoch: int = 0,
-    step: int = 0,
+    epoch: int | None = 0,
+    step: int | None = 0,
     model: nnx.Module | None = None,
     optimizer: nnx.Optimizer | None = None,  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType],
     model_name: str | None = None,
@@ -539,68 +545,120 @@ def batch_metrics(pred: jnp.ndarray, tgt: jnp.ndarray) -> dict[str, jnp.ndarray]
     }
 
 
-def _fft_power_2d(x: jnp.ndarray) -> jnp.ndarray:
-    """x: (H,W) or (H,W,1) real → return |FFT|^2 over full 2D (H,W)."""
-    if x.ndim == 3 and x.shape[-1] == 1:
-        x = x[..., 0]
-    # remove mean to avoid an overwhelming DC spike
-    x = x - jnp.mean(x)
-    F = jnp.fft.fftn(x, s=x.shape, norm="ortho")
-    P = F.real**2 + F.imag**2
-    return P  # (H,W)
-
-
-def _radial_bins(h: int, w: int, nbins: int) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Precompute integer bin ids per (i,j) pixel for radial averaging."""
-    # frequency coordinates on [-0.5, 0.5) after fftshift
-    ky = jnp.fft.fftfreq(h)  # shape (H,)
-    kx = jnp.fft.fftfreq(w)  # shape (W,)
-    KX, KY = jnp.meshgrid(kx, ky, indexing="xy")
-    r = jnp.sqrt(KX**2 + KY**2)  # radial frequency
-    r = jnp.fft.fftshift(r)  # match power after fftshift
-
-    # uniform bins from 0 to Nyquist (max radius)
-    rmax = jnp.max(r)
-    edges = jnp.linspace(0.0, rmax, nbins + 1)
-    # digitize → bin ids in [0, nbins-1]
-    ids = jnp.digitize(r.ravel(), edges) - 1
-    ids = jnp.clip(ids, 0, nbins - 1)
-    return ids.astype(jnp.int32), edges
-
-
-def radial_power_spectrum(x: jnp.ndarray, nbins: int = 64) -> jnp.ndarray:
+## https://github.com/DifferentiableUniverseInitiative/JaxPM/blob/main/jaxpm/utils.py
+def _initialize_pk(mesh_shape, box_shape, kedges, los):
     """
-    Compute isotropic 1D power spectrum by radial binning of |FFT|^2.
-    x: (H,W,1) or (H,W)
-    returns: (nbins,) spectrum (mean power per radial bin), normalized.
+    Parameters
+    ----------
+    mesh_shape : tuple of int
+        Shape of the mesh grid.
+    box_shape : tuple of float
+        Physical dimensions of the box.
+    kedges : None, int, float, or list
+        If None, set dk to twice the minimum.
+        If int, specifies number of edges.
+        If float, specifies dk.
+    los : array_like
+        Line-of-sight vector.
+
+    Returns
+    -------
+    dig : ndarray
+        Indices of the bins to which each value in input array belongs.
+    kcount : ndarray
+        Count of values in each bin.
+    kedges : ndarray
+        Edges of the bins.
+    mumesh : ndarray
+        Mu values for the mesh grid.
     """
-    H, W = x.shape[:2]
-    P = jnp.fft.fftshift(_fft_power_2d(x))  # (H,W)
-    ids, _ = _radial_bins(H, W, nbins)  # (H*W,), static given H,W,nbins
-    vals = P.ravel()
-    # bin means using segment sums
-    counts = jnp.bincount(ids, length=nbins)
-    sums = jnp.bincount(ids, weights=vals, length=nbins)
-    spec = sums / jnp.maximum(counts, 1)
-    # stabilize dynamic range: log-spectrum and mean-normalize
-    spec = jnp.log1p(spec)
-    spec = spec / jnp.maximum(jnp.mean(spec), 1e-8)
-    return spec  # (nbins,)
+    kmax = np.pi * np.min(mesh_shape / box_shape)  # = knyquist
+
+    if isinstance(kedges, None | int | float):
+        if kedges is None:
+            dk = 2 * np.pi / np.min(box_shape) * 2  # twice the minimum wavenumber
+        if isinstance(kedges, int):
+            dk = kmax / (kedges + 1)  # final number of bins will be kedges-1
+        elif isinstance(kedges, float):
+            dk = kedges
+        kedges = np.arange(dk, kmax, dk) + dk / 2  # from dk/2 to kmax-dk/2
+
+    kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
+    kvec = [
+        (2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
+        for m, l, kshape in zip(mesh_shape, box_shape, kshapes)
+    ]
+    kmesh = jnp.sqrt(sum(ki**2 for ki in kvec))
+
+    dig = np.digitize(kmesh.reshape(-1), kedges)
+    kcount = np.bincount(dig, minlength=len(kedges) + 1)
+
+    # Central value of each bin
+    # kavg = (kedges[1:] + kedges[:-1]) / 2
+    kavg = np.bincount(dig, weights=kmesh.reshape(-1), minlength=len(kedges) + 1) / kcount
+    kavg = kavg[1:-1]
+
+    if los is None:
+        mumesh = 1.0
+    else:
+        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
+        kmesh_nozeros = np.where(kmesh == 0, 1, kmesh)
+        mumesh = np.where(kmesh == 0, 0, mumesh / kmesh_nozeros)
+
+    return dig, kcount, kavg, mumesh
 
 
-def batch_spectrum_loss(pred: jnp.ndarray, target: jnp.ndarray, nbins: int = 64) -> jnp.ndarray:
+def power_spectrum(
+    mesh,
+    mesh2=None,
+    box_shape=None,
+    kedges: int | float | list = None,
+    multipoles=0,
+    los=[0.0, 0.0, 1.0],
+):
     """
-    pred/target: (B,H,W,1) or (B,H,W,C) → average spectral MSE over channels.
+    Compute the auto and cross spectrum of 3D fields, with multipoles.
     """
-    B, H, W, C = pred.shape
+    # Initialize
+    mesh_shape = np.array(mesh.shape)
+    if box_shape is None:
+        box_shape = mesh_shape
+    else:
+        box_shape = np.asarray(box_shape)
 
-    def spec_ch(p, t):
-        # average channels’ spectra (or sum and normalize equivalently)
-        def per_ch(pc, tc):
-            sp = radial_power_spectrum(pc, nbins)
-            st = radial_power_spectrum(tc, nbins)
-            return jnp.mean((sp - st) ** 2)
+    if multipoles == 0:
+        los = None
+    else:
+        los = np.asarray(los)
+        los = los / np.linalg.norm(los)
+    poles = np.atleast_1d(multipoles)
+    dig, kcount, kavg, mumesh = _initialize_pk(mesh_shape, box_shape, kedges, los)
+    n_bins = len(kavg) + 2
 
-        return jnp.mean(jax.vmap(per_ch)(jnp.moveaxis(p, -1, 0), jnp.moveaxis(t, -1, 0)))
+    # FFTs
+    meshk = jnp.fft.fftn(mesh, norm="ortho")
+    if mesh2 is None:
+        mmk = meshk.real**2 + meshk.imag**2
+    else:
+        mmk = meshk * jnp.fft.fftn(mesh2, norm="ortho").conj()
 
-    return jnp.mean(jax.vmap(spec_ch)(pred, target))  # scalar
+    # Sum powers
+    pk = jnp.empty((len(poles), n_bins))
+    for i_ell, ell in enumerate(poles):
+        weights = (mmk * (2 * ell + 1) * legendre(ell)(mumesh)).reshape(-1)
+        if mesh2 is None:
+            psum = jnp.bincount(dig, weights=weights, length=n_bins)
+        else:  # XXX: bincount is really slow with complex numbers
+            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)
+            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)
+            psum = (psum_real**2 + psum_imag**2) ** 0.5
+        pk = pk.at[i_ell].set(psum)
+
+    # Normalization and conversion from cell units to [Mpc/h]^3
+    pk = (pk / kcount)[:, 1:-1] * (box_shape / mesh_shape).prod()
+
+    # pk = jnp.concatenate([kavg[None], pk])
+    if np.ndim(multipoles) == 0:
+        return kavg, pk[0]
+    else:
+        return kavg, pk

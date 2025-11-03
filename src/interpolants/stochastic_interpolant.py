@@ -32,12 +32,18 @@ class ResBlock(nnx.Module):
            AdaLN -> SiLU -> Conv3x3 -> (+ skip 1x1 if channels change)
     """
 
-    def __init__(self, in_channels: int, out_channels: int, cond_dim: int, *, rngs: nnx.Rngs):
+    def __init__(
+        self, in_channels: int, out_channels: int, cond_dim: int, *, rngs: nnx.Rngs
+    ):
         self.adaln_1 = AdaLN(cond_dim, in_channels, rngs=rngs)
-        self.conv_1 = nnx.Conv(in_channels, out_channels, (3, 3), padding="SAME", rngs=rngs)
+        self.conv_1 = nnx.Conv(
+            in_channels, out_channels, (3, 3), padding="SAME", rngs=rngs
+        )
 
         self.adaln_2 = AdaLN(cond_dim, out_channels, rngs=rngs)
-        self.conv_2 = nnx.Conv(out_channels, out_channels, (3, 3), padding="SAME", rngs=rngs)
+        self.conv_2 = nnx.Conv(
+            out_channels, out_channels, (3, 3), padding="SAME", rngs=rngs
+        )
 
         # Match channels for residual if needed
         self.residual_proj = None
@@ -113,8 +119,11 @@ class AttentionBlock(nnx.Module):
         k = k.reshape(b, hw, c)
         v = v.reshape(b, hw, c)
         scale = 1.0 / jnp.sqrt(c)
-        attn = jax.nn.softmax(jnp.einsum("bic,bjc->bij", q, k) * scale, axis=-1)
-        out = jnp.einsum("bij,bjc->bic", attn, v).reshape(b, h, w, c)
+
+        # attn = jax.nn.softmax(jnp.einsum("bic,bjc->bij", q, k) * scale, axis=-1)
+        # out = jnp.einsum("bij,bjc->bic", attn, v).reshape(b, h, w, c)
+
+        out = jax.nn.dot_product_attention(q, k, v, scale=scale).reshape(b, h, w, c)
         out = self.proj_out(out)
         return residual + out
 
@@ -139,7 +148,12 @@ class DownBlock(nnx.Module):
         self.attention = AttentionBlock(out_channels, rngs=rngs) if with_attn else None
 
         self.downsample = nnx.Conv(
-            out_channels, out_channels, (3, 3), strides=(2, 2), padding="SAME", rngs=rngs
+            out_channels,
+            out_channels,
+            (3, 3),
+            strides=(2, 2),
+            padding="SAME",
+            rngs=rngs,
         )
 
     def __call__(
@@ -174,7 +188,9 @@ class UpBlock(nnx.Module):
         self.reduce_after_resize = nnx.Conv(
             in_channels, out_channels, (3, 3), padding="SAME", rngs=rngs
         )
-        self.resblock_1 = ResBlock(out_channels + skip_channels, out_channels, cond_dim, rngs=rngs)
+        self.resblock_1 = ResBlock(
+            out_channels + skip_channels, out_channels, cond_dim, rngs=rngs
+        )
         self.resblock_2 = ResBlock(out_channels, out_channels, cond_dim, rngs=rngs)
         self.attention = AttentionBlock(out_channels, rngs=rngs) if with_attn else None
 
@@ -186,7 +202,9 @@ class UpBlock(nnx.Module):
     ) -> jnp.ndarray:
         batch, height, width, _ = skip_connection.shape
         # Resize to skip spatial size
-        x_resized = jax.image.resize(x, (batch, height, width, x.shape[-1]), method="bilinear")
+        x_resized = jax.image.resize(
+            x, (batch, height, width, x.shape[-1]), method="bilinear"
+        )
         hidden = self.reduce_after_resize(x_resized)
         hidden = jnp.concatenate([hidden, skip_connection], axis=-1)
 
@@ -229,11 +247,15 @@ class StochasticInterpolantModel(nnx.Module):
         rngs: nnx.Rngs,
     ):
         # Embeddings (reuse your helpers)
-        self.time_mlp = MLP(time_embedding_dim, fused_cond_dim, fused_cond_dim, rngs=rngs)
+        self.time_mlp = MLP(
+            time_embedding_dim, fused_cond_dim, fused_cond_dim, rngs=rngs
+        )
         self.cosmo_mlp = MLP(cosmology_dim, fused_cond_dim, fused_cond_dim, rngs=rngs)
 
         # Stem
-        self.stem = nnx.Conv(in_channels, base_channels, (3, 3), padding="SAME", rngs=rngs)
+        self.stem = nnx.Conv(
+            in_channels, base_channels, (3, 3), padding="SAME", rngs=rngs
+        )
 
         # Encoder
         self.down_block_1 = DownBlock(
@@ -294,8 +316,12 @@ class StochasticInterpolantModel(nnx.Module):
         )
 
         # Heads for SI outputs
-        self.head_b = nnx.Conv(base_channels, in_channels, (1, 1), padding="SAME", rngs=rngs)
-        self.head_eta = nnx.Conv(base_channels, in_channels, (1, 1), padding="SAME", rngs=rngs)
+        self.head_b = nnx.Conv(
+            base_channels, in_channels, (1, 1), padding="SAME", rngs=rngs
+        )
+        self.head_eta = nnx.Conv(
+            base_channels, in_channels, (1, 1), padding="SAME", rngs=rngs
+        )
 
         self._time_embedding_dim = time_embedding_dim
 
@@ -307,7 +333,9 @@ class StochasticInterpolantModel(nnx.Module):
         time_scalar: (B,) in [0, 1] or diffusion time domain
         cosmology_vector: (B, D_cosmo)
         """
-        time_positional = sinusoidal_time_embed(time_scalar, self._time_embedding_dim)  # (B, Tdim)
+        time_positional = sinusoidal_time_embed(
+            time_scalar, self._time_embedding_dim
+        )  # (B, Tdim)
         time_features = self.time_mlp(time_positional)  # (B, Fdim)
         cosmo_features = self.cosmo_mlp(cosmology_vector)  # (B, Fdim)
         fused_features = jax.nn.silu(time_features + cosmo_features)  # (B, Fdim)
