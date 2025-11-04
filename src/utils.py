@@ -13,7 +13,8 @@ from jax import Array, lax
 
 from src.typing import Batch, TransformName
 
-_STD_CHKPTR = ocp.StandardCheckpointer()
+# _STD_CHKPTR = ocp.StandardCheckpointer()
+_STD_CHKPTR = ocp.AsyncCheckpointer(ocp.StandardCheckpointHandler())
 
 
 def make_train_test_loaders(
@@ -275,6 +276,7 @@ def save_checkpoint(
     model_name: str | None = None,
     alt_name: str | None = None,
     data_stats=None,
+    wait: bool = False,
 ) -> None:
     ckpt_dir = Path(checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -296,6 +298,9 @@ def save_checkpoint(
         save_path = ckpt_dir / alt_name
 
     _STD_CHKPTR.save(str(save_path), payload)
+
+    if wait:
+        _STD_CHKPTR.wait_until_finished()
 
 
 def restore_checkpoint(

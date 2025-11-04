@@ -251,61 +251,70 @@ def train(args: argparse.Namespace):
                 if args.use_wandb:
                     wandb.log(log, step=global_step)
 
-            # Add the loss to the queue for plateau detection
-            _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)
-            _loss_buffer.append((global_step, _loss_ema))
+            if args.use_plateau:
+                # Add the loss to the queue for plateau detection
+                _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)
+                _loss_buffer.append((global_step, _loss_ema))
 
-            if (
-                global_step >= args.plateau_warmup
-                and epoch >= args.plateau_min_epochs
-                and len(_loss_buffer) > args.plateau_window
-            ):
-                # current loss and the loss about k steps ago
-                cur_step, cur_loss = _loss_buffer[-1]
-                # find the oldest entry that is at least plateau_window steps behind
-                # (deque may not have every step if you change maxlen; here we sized it to have enough)
-                old_idx = -1
-                # binary/linear search isn’t needed; the buffer is short
-                for i in range(len(_loss_buffer) - 1, -1, -1):
-                    s, _ = _loss_buffer[i]
-                    if cur_step - s >= args.plateau_window:
-                        old_idx = i
-                        break
-                        if old_idx != -1:
-                            old_step, old_loss = _loss_buffer[old_idx]
-                            denom = abs(old_loss) + 1e-12
-                            rel_impr = abs(cur_loss - old_loss) / denom
+                if (
+                    global_step >= args.plateau_warmup
+                    and epoch >= args.plateau_min_epochs
+                    and len(_loss_buffer) > args.plateau_window
+                ):
+                    # Current loss
+                    cur_step, cur_loss = _loss_buffer[-1]
 
-                    # log the plateau signal
-                    if args.use_wandb:
-                        wandb.log({"train/plateau_rel_impr": rel_impr}, step=global_step)
+                    # Find the oldest entry that is at least plateau_window steps behind
+                    old_idx = -1
+                    for i in range(len(_loss_buffer) - 1, -1, -1):
+                        s, _ = _loss_buffer[i]
+                        if cur_step - s >= args.plateau_window:
+                            old_idx = i
+                            break  # Found it, exit the search loop
 
-                    # stop if relative improvement is below threshold
-                    if rel_impr < args.plateau_threshold:
-                        print(
-                            f"[PlateauStop] No sufficient improvement over "
-                            f"{args.plateau_window} steps (Δrel={rel_impr:.6g} < {args.plateau_threshold}). "
-                            f"Stopping at epoch {epoch}, step {global_step}."
-                        )
-                        # save a final checkpoint before stopping
-                        save_checkpoint(
-                            checkpoint_dir=args.checkpoint_dir,
-                            epoch=epoch,
-                            step=global_step,
-                            model=model,
-                            optimizer=optimizer,
-                            alt_name="PLATEAU_STOP",
-                            data_stats={
-                                "cosmos_mu": cosmos_mu,
-                                "cosmos_sigma": cosmos_sigma,
-                            },
-                        )
-                        _plateau_triggered = True
+                    # If we found a valid old entry, check for plateau
+                    if old_idx != -1:
+                        old_step, old_loss = _loss_buffer[old_idx]
+                        denom = abs(old_loss) + 1e-12
+                        rel_impr = abs(cur_loss - old_loss) / denom
 
+                        # Log the plateau signal
+                        if args.use_wandb:
+                            wandb.log({"train/plateau_rel_impr": rel_impr}, step=global_step)
+
+                        # Check if relative improvement is below threshold
+                        if rel_impr < args.plateau_threshold:
+                            print(
+                                f"[PlateauStop] No sufficient improvement over "
+                                f"{args.plateau_window} steps (Δrel={rel_impr:.6g} < {args.plateau_threshold}). "
+                                f"Stopping at epoch {epoch}, step {global_step}."
+                            )
+                            _plateau_triggered = True
+
+                # Check if plateau was triggered (outside the condition block)
                 if _plateau_triggered:
                     if args.use_wandb:
                         wandb.finish()
-                        return model, optimizer, cosmos_mu, cosmos_sigma  # exit train() early
+
+                    save_checkpoint(
+                        checkpoint_dir=args.checkpoint_dir,
+                        epoch=None,
+                        step=None,
+                        model=model,
+                        optimizer=optimizer,
+                        alt_name=f"Final_model",
+                        data_stats={
+                            "cosmos_mu": cosmos_mu,
+                            "cosmos_sigma": cosmos_sigma,
+                        },
+                        wait=True,
+                    )
+                    return (
+                        model,
+                        optimizer,
+                        cosmos_mu,
+                        cosmos_sigma,
+                    )  # exit train() early
 
         # CHECKPOINT (store cosmos stats too, for completeness)
         if epoch % args.ckpt_every == 0:
@@ -408,6 +417,16 @@ def train(args: argparse.Namespace):
     if args.use_wandb:
         wandb.finish()
 
+    save_checkpoint(
+        checkpoint_dir=args.checkpoint_dir,
+        epoch=None,
+        step=None,
+        model=model,
+        optimizer=optimizer,
+        alt_name=f"Final_model",
+        data_stats={"cosmos_mu": cosmos_mu, "cosmos_sigma": cosmos_sigma},
+        wait=True,  # Since save_checkpoint is async we specifically need to tell it to block here
+    )
     return model, optimizer, cosmos_mu, cosmos_sigma
 
 
@@ -448,6 +467,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # fmt: off
     # Early Stopping (Loss Plateau Detection)
+    p.add_argument("--use-plateau", type=bool, action="store_true", default=False)
     p.add_argument("--plateau-window", type=int, default=1000,
         help="k: compare current loss to loss k steps ago")
     p.add_argument("--plateau-threshold", type=float, default=1e-3,
@@ -483,13 +503,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
     model, optimizer, cosmos_mu, cosmos_sigma = train(args)
-
-    save_checkpoint(
-        checkpoint_dir=args.checkpoint_dir,
-        epoch=None,
-        step=None,
-        model=model,
-        optimizer=optimizer,
-        alt_name=f"Final_model",
-        data_stats={"cosmos_mu": cosmos_mu, "cosmos_sigma": cosmos_sigma},
-    )
