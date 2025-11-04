@@ -61,9 +61,7 @@ def make_train_test_loaders(
     # This ensures that there is no data leakage
     assert len(jnp.intersect1d(train_idx, test_idx)) == 0
 
-    def _standardize_params(
-        x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray
-    ) -> jnp.ndarray:
+    def _standardize_params(x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
         return (x - mu) / sigma
 
     def _add_channel_last(x: jnp.ndarray):
@@ -170,9 +168,7 @@ def make_transform(
 
             tiny = jnp.finfo(x.dtype).tiny
             g = jnp.log(jnp.maximum(x, tiny))  # (B,H,W,C)
-            g_min = jnp.min(
-                g, axis=reduce_axes, keepdims=True
-            )  # (B,1,1,C) or (B,1,1,1)
+            g_min = jnp.min(g, axis=reduce_axes, keepdims=True)  # (B,1,1,C) or (B,1,1,1)
             y = (g - g_min) * inv_ln10  # base-10, min->0
             return y
 
@@ -303,9 +299,7 @@ def save_checkpoint(
         _STD_CHKPTR.wait_until_finished()
 
 
-def restore_checkpoint(
-    checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer
-):  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
+def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer):  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
     checkpoint = _STD_CHKPTR.restore(checkpoint_path)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
@@ -323,7 +317,7 @@ def delete_checkpoint(checkpoint_path: str, folder_name: str) -> None:
 
 
 def gamma_and_deriv(
-    t: jnp.ndarray, a: float = 1.0, eps: float = 1e-6
+    t: jnp.ndarray, a: float = 1.0, eps: float = 1e-12
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     t = jnp.clip(t, eps, 1.0 - eps)
     num = 2.0 * a * t * (1.0 - t)
@@ -335,9 +329,7 @@ def gamma_and_deriv(
 def make_xt_and_targets(
     x0: jnp.ndarray, x1: jnp.ndarray, z: jnp.ndarray, time: jnp.ndarray, a: float = 1.0
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    interpolant = (1.0 - time)[:, None, None, None] * x0 + time[
-        :, None, None, None
-    ] * x1
+    interpolant = (1.0 - time)[:, None, None, None] * x0 + time[:, None, None, None] * x1
     gamma, gamma_dot = gamma_and_deriv(time, a=a)
     x_t = interpolant + gamma[:, None, None, None] * z
     dInterpolant = x1 - x0
@@ -347,7 +339,7 @@ def make_xt_and_targets(
 
 def build_t_grid(
     n_steps: int,
-    endpoint_clip: float = 1e-3,
+    endpoint_clip: float = 1e-12,
     schedule: str = "cosine",
     power: float = 2.0,
 ) -> jnp.ndarray:
@@ -356,19 +348,18 @@ def build_t_grid(
     elif schedule == "cosine":
         s = jnp.linspace(0.0, 1.0, n_steps)
         t = 0.5 - 0.5 * jnp.cos(jnp.pi * s)
-        t = t * (1.0 - 2 * endpoint_clip) + endpoint_clip
+        t = jnp.clip(t, endpoint_clip, 1.0 - endpoint_clip)
     elif schedule == "power":
         s = jnp.linspace(0.0, 1.0, n_steps) ** power
-        t = s * (1.0 - 2 * endpoint_clip) + endpoint_clip
+        t = jnp.clip(t, endpoint_clip, 1.0 - endpoint_clip)
     else:
         raise ValueError("Unknown t schedule")
     return t
 
 
-def epsilon_schedule(
-    t: jnp.ndarray, eps0: float = 0.1, taper: float = 0.6
-) -> jnp.ndarray:
-    return eps0 * (t * (1.0 - t)) ** taper
+def epsilon_schedule(t: jnp.ndarray, eps0: float = 0.1, taper: float = 0.6) -> jnp.ndarray:
+    schedule = eps0 * (t * (1.0 - t)) ** taper
+    return schedule
 
 
 def sde_sample_forward_conditional(
@@ -379,7 +370,7 @@ def sde_sample_forward_conditional(
     a_gamma: float = 1.0,
     eps0: float = 0.1,
     eps_taper: float = 0.6,
-    endpoint_clip: float = 1e-3,
+    endpoint_clip: float = 1e-12,
     t_schedule: str = "cosine",
     t_power: float = 2.0,
     key: jax.Array | None = None,
@@ -388,24 +379,31 @@ def sde_sample_forward_conditional(
     B = x0.shape[0]
     X = x0
     t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
-    dt = 1.0 / n_infer_steps
 
     # Makes use of Euler–Maruyama to integrate the SDE
     def euler_maruyama(i, state):
         X, key = state
         key, sub = jax.random.split(key)
+
         t_i = jnp.broadcast_to(t_grid[i], (B,))
-        eps_i = epsilon_schedule(t_i, eps0, eps_taper)
+        t_ip1 = jnp.broadcast_to(t_grid[i + 1], (B,))
+
+        # Compute the time steps on the fly
+        dt_i = t_ip1 - t_i  # shape (B,)
+
+        # Check to see if it is the last step and then force eps_i to be 0
+        is_last = i == n_infer_steps - 1
+        eps_i = jnp.where(is_last, 0.0, epsilon_schedule(t_i, eps0, eps_taper))
+
         gamma_i, _ = gamma_and_deriv(t_i, a=a_gamma)
+
+        gamma_i = jnp.maximum(gamma_i, 1e-12)  # A numerical gaurd for gamma
+
         b_hat, eta_hat = model(X, t_i, cond_vec)
         s_hat = -eta_hat / gamma_i[:, None, None, None]
         bF = b_hat + eps_i[:, None, None, None] * s_hat
         noise = jax.random.normal(sub, X.shape)
-        X_next = (
-            X
-            + bF * dt
-            + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
-        )
+        X_next = X + bF * dt_i + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt_i)
         return (X_next, key)
 
     X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
@@ -429,15 +427,25 @@ def sde_sample_forward_cfg(
     B = x0.shape[0]
     X = x0
     t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
-    dt = 1.0 / n_infer_steps
 
     # Makes use of Euler–Maruyama to integrate the SDE
     def euler_maruyama(i, state):
         X, key = state
         key, sub = jax.random.split(key)
+
         t_i = jnp.broadcast_to(t_grid[i], (B,))
-        eps_i = epsilon_schedule(t_i, eps0, eps_taper)
+        t_ip1 = jnp.broadcast_to(t_grid[i + 1], (B,))
+
+        # Compute the time steps on the fly
+        dt_i = t_ip1 - t_i  # shape (B,)
+
+        # Check to see if it is the last step and then force eps_i to be 0
+        is_last = i == n_infer_steps - 1
+        eps_i = jnp.where(is_last, 0.0, epsilon_schedule(t_i, eps0, eps_taper))
+
         gamma_i, _ = gamma_and_deriv(t_i, a=a_gamma)
+
+        gamma_i = jnp.maximum(gamma_i, 1e-12)  # A numerical gaurd for gamma
 
         b_u, eta_u = model(X, t_i, jnp.zeros_like(cond_vec))
         b_c, eta_c = model(X, t_i, cond_vec)
@@ -450,11 +458,7 @@ def sde_sample_forward_cfg(
         bF = b_hat + eps_i[:, None, None, None] * s_hat
 
         noise = jax.random.normal(sub, X.shape)
-        X_next = (
-            X
-            + bF * dt
-            + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt)
-        )
+        X_next = X + bF * dt_i + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt_i)
         return (X_next, key)
 
     X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
@@ -533,9 +537,7 @@ def rmse(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     return jnp.sqrt(mse(x, y))
 
 
-def psnr(
-    x: jnp.ndarray, y: jnp.ndarray, data_range: float | None = None
-) -> jnp.ndarray:
+def psnr(x: jnp.ndarray, y: jnp.ndarray, data_range: float | None = None) -> jnp.ndarray:
     # If inputs already normalized, set data_range=1.0
     if data_range is None:
         mx = jnp.max(jnp.stack([x, y]))
@@ -626,9 +628,7 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
 
     # Central value of each bin
     # kavg = (kedges[1:] + kedges[:-1]) / 2
-    kavg = (
-        np.bincount(dig, weights=kmesh.reshape(-1), minlength=len(kedges) + 1) / kcount
-    )
+    kavg = np.bincount(dig, weights=kmesh.reshape(-1), minlength=len(kedges) + 1) / kcount
     kavg = kavg[1:-1]
 
     if los is None:
