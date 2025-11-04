@@ -506,6 +506,26 @@ def train(
     if use_wandb:
         wandb.finish()
 
+    save_checkpoint(
+        args.checkpoint_dir,
+        None,
+        None,
+        generator,
+        opt_gen,
+        alt_name=f"Final_Generator",
+        wait=True,
+    )
+
+    save_checkpoint(
+        args.checkpoint_dir,
+        None,
+        None,
+        discriminator,
+        opt_disc,
+        alt_name=f"Final_Discriminator",
+        wait=True,
+    )
+
     print("Training loop finished.")
 
 

@@ -450,6 +450,11 @@ def sde_sample_forward_cfg(
         b_u, eta_u = model(X, t_i, jnp.zeros_like(cond_vec))
         b_c, eta_c = model(X, t_i, cond_vec)
 
+        assert b_u.shape[-1] == 1
+        assert eta_u.shape[-1] == 1
+        assert b_c.shape[-1] == 1
+        assert eta_c.shape[-1] == 1
+
         s = guidance_scale
         b_hat = b_u + s * (b_c - b_u)
         eta_hat = eta_u + s * (eta_c - eta_u)

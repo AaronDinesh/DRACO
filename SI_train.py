@@ -99,7 +99,7 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
         weight_decay_rate=args.weight_decay,
     )
 
-    @partial(jax.jit, donate_argnums=(2,))
+    @jax.jit
     def train_step(
         optimizer: nnx.Optimizer,
         model: StochasticInterpolantModel,
@@ -127,7 +127,7 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
 
         return optimizer, model, metrics
 
-    @partial(jax.jit, donate_argnums=(1,))
+    @jax.jit
     def eval_step(
         model: StochasticInterpolantModel,
         batch: dict[str, jnp.ndarray],
@@ -467,7 +467,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # fmt: off
     # Early Stopping (Loss Plateau Detection)
-    p.add_argument("--use-plateau", type=bool, action="store_true", default=False)
+    p.add_argument("--use-plateau", action="store_true", default=False)
     p.add_argument("--plateau-window", type=int, default=1000,
         help="k: compare current loss to loss k steps ago")
     p.add_argument("--plateau-threshold", type=float, default=1e-3,
@@ -480,11 +480,11 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # sampler
     p.add_argument("--n-infer-steps", type=int, default=300)
-    p.add_argument("--eval-infer-steps", type=int, default=120)
+    p.add_argument("--eval-infer-steps", type=int, default=300)
     p.add_argument("--guidance-scale", type=float, default=1.5)
     p.add_argument("--eps0", type=float, default=0.1)
     p.add_argument("--eps-taper", type=float, default=0.6)
-    p.add_argument("--endpoint-clip", type=float, default=1e-3)
+    p.add_argument("--endpoint-clip", type=float, default=1e-12)
     p.add_argument("--t-schedule", choices=["linear", "cosine", "power"], default="cosine")
     p.add_argument("--t-power", type=float, default=2.0)
 
