@@ -447,13 +447,17 @@ def sde_sample_forward_cfg(
 
         gamma_i = jnp.maximum(gamma_i, 1e-12)  # A numerical gaurd for gamma
 
+        jax.debug.print(
+            "Step {i}: X.shape={x}, cond_vec.shape={c}", i=i, x=X.shape, c=cond_vec.shape
+        )
+
         b_u, eta_u = model(X, t_i, jnp.zeros_like(cond_vec))
+
+        jax.debug.print("b_u.shape={bu}, eta_u.shape={eu}", bu=b_u.shape, eu=eta_u.shape)
+
         b_c, eta_c = model(X, t_i, cond_vec)
 
-        assert b_u.shape[-1] == 1
-        assert eta_u.shape[-1] == 1
-        assert b_c.shape[-1] == 1
-        assert eta_c.shape[-1] == 1
+        jax.debug.print("b_c.shape={bc}, eta_c.shape={ec}", bc=b_c.shape, ec=eta_c.shape)
 
         s = guidance_scale
         b_hat = b_u + s * (b_c - b_u)
@@ -464,6 +468,9 @@ def sde_sample_forward_cfg(
 
         noise = jax.random.normal(sub, X.shape)
         X_next = X + bF * dt_i + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt_i)
+
+        jax.debug.print("  X_next.shape={xn}", xn=X_next.shape)
+
         return (X_next, key)
 
     X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))

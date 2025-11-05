@@ -66,7 +66,8 @@ def si_losses(
         cond_use = cond_vec
 
     b_hat, eta_hat = model(x_t, t, cond_use)
-
+    assert b_hat.shape[-1] == 1
+    assert eta_hat.shape[-1] == 1
     reduce = lambda y: jnp.sum(y, axis=(1, 2, 3))  # NHWC
     lb = 0.5 * reduce(b_hat**2) - reduce((dI + gdot_z) * b_hat)
     leta = 0.5 * reduce(eta_hat**2) - reduce(z * eta_hat)
@@ -110,10 +111,10 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
 
         # Local-fidelity augs (random crops + flips); keep cond unchanged (global)
         key0, key1, keyf, keytz = random.split(key, 4)
-        x0 = random_crops(x0, args.crop_size, key0)
-        x1 = random_crops(x1, args.crop_size, key1)
-        x0 = maybe_hflip(x0, 0.5, keyf)
-        x1 = maybe_hflip(x1, 0.5, keyf)
+        # x0 = random_crops(x0, args.crop_size, key0)
+        # x1 = random_crops(x1, args.crop_size, key1)
+        # x0 = maybe_hflip(x0, 0.5, keyf)
+        # x1 = maybe_hflip(x1, 0.5, keyf)
 
         def loss_fn(m: StochasticInterpolantModel) -> jnp.ndarray:
             metrics = si_losses(
@@ -251,6 +252,7 @@ def train(args: argparse.Namespace):
                 if args.use_wandb:
                     wandb.log(log, step=global_step)
 
+            break  # REMOVE
             if args.use_plateau:
                 # Add the loss to the queue for plateau detection
                 _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)
