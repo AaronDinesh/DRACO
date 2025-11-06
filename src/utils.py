@@ -441,9 +441,10 @@ def sde_sample_forward_cfg(
             dt_i = t_ip1 - t_i  # shape (B,)
 
             # Check to see if it is the last step and then force eps_i to be 0
-            is_last = i == n_infer_steps - 1
-            eps_i = jnp.where(is_last, 0.0, epsilon_schedule(t_i, eps0, eps_taper))
+            # is_last = i == n_infer_steps - 1
+            # eps_i = jnp.where(is_last, 0.0, epsilon_schedule(t_i, eps0, eps_taper))
 
+            eps_i = epsilon_schedule(t_i, eps0, eps_taper)
             gamma_i, _ = gamma_and_deriv(t_i, a=a_gamma)
 
             gamma_i = jnp.maximum(gamma_i, 1e-12)  # A numerical gaurd for gamma
@@ -469,14 +470,21 @@ def sde_sample_forward_cfg(
 
             noise = jax.random.normal(sub, X.shape)
             X_next = (
-                X + bF * dt_i + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt_i)
+                X + bF * dt_i[:, None, None, None] + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt_i)[:, None, None, None]
             )
 
             jax.debug.print("  X_next.shape={xn}", xn=X_next.shape)
 
             return (X_next, key)
 
-    X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
+    for i in range(0, n_infer_steps):
+        breakpoint()
+        X, key = euler_maruyama(i, (X, key))
+
+    # X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
+
+
+
     return X
 
 
