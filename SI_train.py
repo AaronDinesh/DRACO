@@ -253,7 +253,6 @@ def train(args: argparse.Namespace):
                 if args.use_wandb:
                     wandb.log(log, step=global_step)
 
-            break  # REMOVE
             if args.use_plateau:
                 # Add the loss to the queue for plateau detection
                 _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)

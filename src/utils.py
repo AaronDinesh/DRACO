@@ -403,7 +403,7 @@ def sde_sample_forward_conditional(
         s_hat = -eta_hat / gamma_i[:, None, None, None]
         bF = b_hat + eps_i[:, None, None, None] * s_hat
         noise = jax.random.normal(sub, X.shape)
-        X_next = X + bF * dt_i + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt_i)
+        X_next = X + bF * dt_i[:, None, None, None] + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt_i[:, None, None, None])
         return (X_next, key)
 
     X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
@@ -427,9 +427,9 @@ def sde_sample_forward_cfg(
     B = x0.shape[0]
     X = x0
     t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
-    jax.debug.print(
-        "Starting Inference"
-    )
+    # jax.debug.print(
+    #     "Starting Inference"
+    # )
     # Makes use of Euler–Maruyama to integrate the SDE
     def euler_maruyama(i, state):
         X, key = state
@@ -449,9 +449,9 @@ def sde_sample_forward_cfg(
 
         gamma_i = jnp.maximum(gamma_i, 1e-12)  # A numerical gaurd for gamma
 
-        jax.debug.print(
-            "Step {i}: X.shape={x}, cond_vec.shape={c}", i=i, x=X.shape, c=cond_vec.shape
-        )
+        # jax.debug.print(
+        #     "Step {i}: X.shape={x}, cond_vec.shape={c}", i=i, x=X.shape, c=cond_vec.shape
+        # )
 
         b_u, eta_u = model(X, t_i, jnp.zeros_like(cond_vec))
 
