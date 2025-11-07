@@ -427,63 +427,65 @@ def sde_sample_forward_cfg(
     B = x0.shape[0]
     X = x0
     t_grid = build_t_grid(n_infer_steps, endpoint_clip, t_schedule, t_power)
-
+    jax.debug.print(
+        "Starting Inference"
+    )
     # Makes use of Euler–Maruyama to integrate the SDE
     def euler_maruyama(i, state):
-        with jax.disable_jit():
-            X, key = state
-            key, sub = jax.random.split(key)
+        X, key = state
+        key, sub = jax.random.split(key)
 
-            t_i = jnp.broadcast_to(t_grid[i], (B,))
-            t_ip1 = jnp.broadcast_to(t_grid[i + 1], (B,))
+        t_i = jnp.broadcast_to(t_grid[i], (B,))
+        t_ip1 = jnp.broadcast_to(t_grid[i + 1], (B,))
 
-            # Compute the time steps on the fly
-            dt_i = t_ip1 - t_i  # shape (B,)
+        # Compute the time steps on the fly
+        dt_i = t_ip1 - t_i  # shape (B,)
 
-            # Check to see if it is the last step and then force eps_i to be 0
-            # is_last = i == n_infer_steps - 1
-            # eps_i = jnp.where(is_last, 0.0, epsilon_schedule(t_i, eps0, eps_taper))
+        # Check to see if it is the last step and then force eps_i to be 0
+        is_last = i == n_infer_steps - 1
+        eps_i = jnp.where(is_last, 0.0, epsilon_schedule(t_i, eps0, eps_taper))
 
-            eps_i = epsilon_schedule(t_i, eps0, eps_taper)
-            gamma_i, _ = gamma_and_deriv(t_i, a=a_gamma)
+        gamma_i, _ = gamma_and_deriv(t_i, a=a_gamma)
 
-            gamma_i = jnp.maximum(gamma_i, 1e-12)  # A numerical gaurd for gamma
+        gamma_i = jnp.maximum(gamma_i, 1e-12)  # A numerical gaurd for gamma
 
-            jax.debug.print(
-                "Step {i}: X.shape={x}, cond_vec.shape={c}", i=i, x=X.shape, c=cond_vec.shape
-            )
+        jax.debug.print(
+            "Step {i}: X.shape={x}, cond_vec.shape={c}", i=i, x=X.shape, c=cond_vec.shape
+        )
 
-            b_u, eta_u = model(X, t_i, jnp.zeros_like(cond_vec))
+        b_u, eta_u = model(X, t_i, jnp.zeros_like(cond_vec))
 
-            jax.debug.print("b_u.shape={bu}, eta_u.shape={eu}", bu=b_u.shape, eu=eta_u.shape)
+        # jax.debug.print("b_u.shape={bu}, eta_u.shape={eu}", bu=b_u.shape, eu=eta_u.shape)
 
-            b_c, eta_c = model(X, t_i, cond_vec)
+        b_c, eta_c = model(X, t_i, cond_vec)
 
-            jax.debug.print("b_c.shape={bc}, eta_c.shape={ec}", bc=b_c.shape, ec=eta_c.shape)
+        # jax.debug.print("b_c.shape={bc}, eta_c.shape={ec}", bc=b_c.shape, ec=eta_c.shape)
 
-            s = guidance_scale
-            b_hat = b_u + s * (b_c - b_u)
-            eta_hat = eta_u + s * (eta_c - eta_u)
+        s = guidance_scale
+        b_hat = b_u + s * (b_c - b_u)
+        eta_hat = eta_u + s * (eta_c - eta_u)
 
-            s_hat = -eta_hat / gamma_i[:, None, None, None]
-            bF = b_hat + eps_i[:, None, None, None] * s_hat
+        s_hat = -eta_hat / gamma_i[:, None, None, None]
+        bF = b_hat + eps_i[:, None, None, None] * s_hat
 
-            noise = jax.random.normal(sub, X.shape)
-            X_next = (
-                X + bF * dt_i[:, None, None, None] + jnp.sqrt(2.0 * eps_i)[:, None, None, None] * noise * jnp.sqrt(dt_i)[:, None, None, None]
-            )
+        noise = jax.random.normal(sub, X.shape)
+        X_next = (
+            X
+            + bF * dt_i[:, None, None, None]
+            + jnp.sqrt(2.0 * eps_i)[:, None, None, None]
+            * noise
+            * jnp.sqrt(dt_i)[:, None, None, None]
+        )
 
-            jax.debug.print("  X_next.shape={xn}", xn=X_next.shape)
+        # jax.debug.print("  X_next.shape={xn}", xn=X_next.shape)
 
-            return (X_next, key)
+        return (X_next, key)
 
-    for i in range(0, n_infer_steps):
-        breakpoint()
-        X, key = euler_maruyama(i, (X, key))
+    # for i in range(0, n_infer_steps):
+    #     breakpoint()
+    #     X, key = euler_maruyama(i, (X, key))
 
-    # X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
-
-
+    X, _ = jax.lax.fori_loop(0, n_infer_steps, euler_maruyama, (X, key))
 
     return X
 

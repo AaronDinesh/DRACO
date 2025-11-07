@@ -100,7 +100,7 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
         weight_decay_rate=args.weight_decay,
     )
 
-    # @jax.jit
+    @jax.jit
     def train_step(
         optimizer: nnx.Optimizer,
         model: StochasticInterpolantModel,
@@ -128,7 +128,7 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
 
         return optimizer, model, metrics
 
-    # @jax.jit
+    @jax.jit
     def eval_step(
         model: StochasticInterpolantModel,
         batch: dict[str, jnp.ndarray],
