@@ -237,7 +237,6 @@ def train(args: argparse.Namespace):
             leave=False,
             desc=f"Train {epoch:03d}",
         ):
-            break  ### REMOVE
             train_key, sub = random.split(train_key)
             optimizer, model, metrics = train_step(optimizer, model, batch, sub)
             step += 1
