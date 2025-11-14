@@ -121,7 +121,9 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
                 m, x0, x1, cond, keytz, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
             )
 
-            return metrics["loss"], metrics  # Return loss and then metrics as auxiliary return
+            return metrics[
+                "loss"
+            ], metrics  # Return loss and then metrics as auxiliary return
 
         (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
         optimizer.update(model, grads)
@@ -135,7 +137,9 @@ def make_optim_and_steps(args: argparse.Namespace, n_train: int):
         key: jax.Array,
     ):
         x0, x1, cond = batch["inputs"], batch["targets"], batch["params"]
-        return si_losses(model, x0, x1, cond, key, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p)
+        return si_losses(
+            model, x0, x1, cond, key, a_gamma=args.a_gamma, cfg_drop_p=args.cfg_drop_p
+        )
 
     return tx, train_step, eval_step
 
@@ -222,7 +226,9 @@ def train(args: argparse.Namespace):
     best_val = float("inf")
     _loss_ema = None
 
-    _loss_buffer = deque(maxlen=max(2, args.plateau_window + 1))  # store (global_step, loss)
+    _loss_buffer = deque(
+        maxlen=max(2, args.plateau_window + 1)
+    )  # store (global_step, loss)
     _plateau_triggered = False
 
     # Epochs
@@ -243,7 +249,9 @@ def train(args: argparse.Namespace):
             global_step += 1
 
             if step % args.log_rate == 0 or step == train_steps_per_epoch:
-                log = {f"train/{k}": float(jax.device_get(v)) for k, v in metrics.items()}
+                log = {
+                    f"train/{k}": float(jax.device_get(v)) for k, v in metrics.items()
+                }
                 log.update({"epoch": epoch, "step": global_step})
                 print(
                     f"[Train e{epoch:03d} s{step:04d}] "
@@ -254,7 +262,9 @@ def train(args: argparse.Namespace):
 
             if args.use_plateau:
                 # Add the loss to the queue for plateau detection
-                _loss_ema = ema_update(_loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98)
+                _loss_ema = ema_update(
+                    _loss_ema, float(jax.device_get(metrics["loss"])), beta=0.98
+                )
                 _loss_buffer.append((global_step, _loss_ema))
 
                 if (
@@ -281,7 +291,9 @@ def train(args: argparse.Namespace):
 
                         # Log the plateau signal
                         if args.use_wandb:
-                            wandb.log({"train/plateau_rel_impr": rel_impr}, step=global_step)
+                            wandb.log(
+                                {"train/plateau_rel_impr": rel_impr}, step=global_step
+                            )
 
                         # Check if relative improvement is below threshold
                         if rel_impr < args.plateau_threshold:
@@ -486,7 +498,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--eps0", type=float, default=0.1)
     p.add_argument("--eps-taper", type=float, default=0.6)
     p.add_argument("--endpoint-clip", type=float, default=1e-12)
-    p.add_argument("--t-schedule", choices=["linear", "cosine", "power"], default="cosine")
+    p.add_argument(
+        "--t-schedule", choices=["linear", "cosine", "power"], default="linear"
+    )
     p.add_argument("--t-power", type=float, default=2.0)
 
     # checkpoints & wandb
