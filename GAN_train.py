@@ -424,7 +424,7 @@ def train(
                     opt_gen,  # pyright: ignore[reportUnknownArgumentType]
                     discriminator,
                     batch,  # pyright: ignore[reportUnknownArgumentType]
-                    l1_lambda=args.l1_lambda,  # pyright: ignore[reportAny]
+                    l1_lambda=float(args.l1_lambda),  # pyright: ignore[reportAny]
                 )
 
             global_step += 1
@@ -469,7 +469,7 @@ def train(
             position=1,
             desc=f"Epoch {epoch:03d} - Running Eval Batch",
         ):
-            metrics = eval_step(discriminator, generator, batch, l1_lambda=args.l1_lambda)  # pyright: ignore[reportAny, reportUnknownArgumentType]
+            metrics = eval_step(discriminator, generator, batch, l1_lambda=float(args.l1_lambda))  # pyright: ignore[reportAny, reportUnknownArgumentType]
             if first_fake is None:
                 first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
                 first_batch = batch
@@ -565,7 +565,7 @@ def main(parser: argparse.ArgumentParser):
         cosmos_params_sigma,
     ) = make_train_test_loaders(
         key=train_test_key,  # pyright: ignore[reportAny]
-        batch_size=args.batch_size,  # pyright: ignore[reportAny]
+        batch_size=int(args.batch_size),  # pyright: ignore[reportAny]
         input_data_path=args.input_maps,  # pyright: ignore[reportAny]
         output_data_path=args.output_maps,  # pyright: ignore[reportAny]
         csv_path=args.cosmos_params,  # pyright: ignore[reportAny]
@@ -578,7 +578,9 @@ def main(parser: argparse.ArgumentParser):
     generator = src.Generator(
         key=gen_key,
         in_features=input_features_size,  # pyright: ignore[reportAny]
-        out_features=args.img_channels,  # p# pyright: ignore[reportUnusedCallResult]yright: ignore[reportAny]
+        out_features=int(
+            args.img_channels
+        ),  # p# pyright: ignore[reportUnusedCallResult]yright: ignore[reportAny]
         len_cosmos_params=cosmos_params_len,
     )
 
@@ -590,24 +592,24 @@ def main(parser: argparse.ArgumentParser):
         condition_proj_dim=8,
     )
 
-    params = nnx.state(generator, nnx.Param)
-    total_params_gen = sum(jnp.prod(x.shape) for x in jax.tree_util.tree_leaves(params))
+    # params = nnx.state(generator, nnx.Param)
+    # total_params_gen = sum(jnp.prod(x.shape) for x in jax.tree_util.tree_leaves(params))
 
-    params_disc = nnx.state(discriminator, nnx.Param)
-    total_params_disc = sum(np.prod(x.shape) for x in jax.tree_util.tree_leaves(params_disc))
+    # params_disc = nnx.state(discriminator, nnx.Param)
+    # total_params_disc = sum(np.prod(x.shape) for x in jax.tree_util.tree_leaves(params_disc))
 
-    print(f"Total Gen: {total_params_gen}")
-    print(f"Total Disc: {total_params_disc}")
+    # print(f"Total Gen: {total_params_gen}")
+    # print(f"Total Disc: {total_params_disc}")
 
     print("----- Creating Optimizers -----")
     opt_gen = nnx.Optimizer(
         generator,
-        optax.adam(args.g_lr, b1=args.beta1, b2=args.beta2),  # pyright: ignore[ reportAny]
+        optax.adam(float(args.g_lr), b1=float(args.beta1), b2=float(args.beta2)),  # pyright: ignore[ reportAny]
         wrt=nnx.Param,
     )
     opt_disc = nnx.Optimizer(
         discriminator,
-        optax.adam(args.d_lr, b1=args.beta1, b2=args.beta2),  # pyright: ignore[reportAny]
+        optax.adam(float(args.d_lr), b1=float(args.beta1), b2=float(args.beta2)),  # pyright: ignore[reportAny]
         wrt=nnx.Param,
     )
 
@@ -621,16 +623,16 @@ def main(parser: argparse.ArgumentParser):
 
     print("----- Begining Training Run -----")
     train(
-        num_epochs=args.epochs,  # pyright: ignore[reportAny]
-        batch_size=args.batch_size,  # pyright: ignore[reportAny]
+        num_epochs=int(args.epochs),  # pyright: ignore[reportAny]
+        batch_size=int(args.batch_size),  # pyright: ignore[reportAny]
         train_loader=train_loader,
         n_train=n_train,
         test_loader=test_loader,
         n_test=n_test,
         img_size=img_size,
-        img_channels=args.img_channels,  # pyright: ignore[reportAny]
+        img_channels=int(args.img_channels),  # pyright: ignore[reportAny]
         cosmos_params_len=cosmos_params_len,
-        log_every=args.log_rate,  # pyright: ignore[reportAny]
+        log_every=int(args.log_rate),  # pyright: ignore[reportAny]
         generator=generator,
         discriminator=discriminator,
         opt_gen=opt_gen,
