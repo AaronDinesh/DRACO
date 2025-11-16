@@ -19,8 +19,10 @@ import wandb
 from src import Discriminator, Generator
 from src.typing import Batch, Loader, TransformName
 from src.utils import (
+    batch_metrics,
     delete_checkpoint,
     make_transform,
+    power_spectrum,
     restore_checkpoint,
     save_checkpoint,
 )
@@ -231,6 +233,7 @@ def gen_step(
             "g_reconstruct": reconstruction_loss,
             "g_trick_acc": g_trick_acc,
         }
+        metrics["sample_fake"] = jax.lax.stop_gradient(fake_images)
         return gen_loss, metrics
 
     (loss, metrics), grads = nnx.value_and_grad(loss_fn, has_aux=True)(gen, disc)
@@ -336,6 +339,37 @@ def _wandb_images(
     return imgs
 
 
+def _power_spectrum_values(final_img: jnp.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
+    mesh = final_img
+    if mesh.ndim == 3 and mesh.shape[-1] == 1:
+        mesh = mesh[..., 0]
+    k_vals, pk = power_spectrum(mesh, kedges=bins)
+    return np.asarray(jax.device_get(k_vals)), np.asarray(jax.device_get(pk))
+
+
+def _power_spectrum_metrics(
+    preds: jnp.ndarray, targets: jnp.ndarray, bins: int, return_spectrum: bool = False
+) -> tuple[float, tuple[np.ndarray, np.ndarray, np.ndarray] | None]:
+    preds_np = np.asarray(jax.device_get(preds))
+    targets_np = np.asarray(jax.device_get(targets))
+    batch_mses: list[float] = []
+    representative: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+
+    for pred, target in zip(preds_np, targets_np):
+        k_pred, pk_pred = _power_spectrum_values(pred, bins)
+        _, pk_target = _power_spectrum_values(target, bins)
+        min_len = min(len(pk_pred), len(pk_target))
+        if min_len == 0:
+            continue
+        diff = pk_pred[:min_len] - pk_target[:min_len]
+        batch_mses.append(float(np.mean(np.square(diff))))
+        if representative is None and return_spectrum:
+            representative = (k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len])
+
+    mse = float(np.mean(batch_mses)) if batch_mses else 0.0
+    return mse, representative
+
+
 def train(
     num_epochs: int,
     batch_size: int,
@@ -393,6 +427,7 @@ def train(
                 eval_steps=eval_steps_per_epoch,
                 cosmos_params_mu=cosmos_params_mu,
                 cosmos_params_sigma=cosmos_params_sigma,
+                power_spectrum_bins=int(args.power_spectrum_bins),
             ),
         )
 
@@ -428,6 +463,17 @@ def train(
                     batch,  # pyright: ignore[reportUnknownArgumentType]
                     l1_lambda=float(args.l1_lambda),  # pyright: ignore[reportAny]
                 )
+                fake_images = g_metrics.pop("sample_fake", None)
+                if fake_images is not None:
+                    recon_metrics = batch_metrics(fake_images, batch["targets"])
+                    power_mse, _ = _power_spectrum_metrics(
+                        fake_images, batch["targets"], int(args.power_spectrum_bins)
+                    )
+                    g_metrics = {
+                        **g_metrics,
+                        **recon_metrics,
+                        "power_spectrum_mse": jnp.asarray(power_mse),
+                    }
 
             global_step += 1
             step += 1
@@ -463,6 +509,7 @@ def train(
         eval_sums = {}
         first_fake = None
         first_batch = None
+        last_spectrum: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
         for batch in tqdm(
             test_loader(key=test_key, drop_last=True),
@@ -475,8 +522,19 @@ def train(
             if first_fake is None:
                 first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
                 first_batch = batch
+            fake_images = metrics["sample_fake"]  # pyright: ignore[reportAny]
+            recon_metrics = batch_metrics(fake_images, batch["targets"])
+            power_mse, spectrum = _power_spectrum_metrics(
+                fake_images, batch["targets"], int(args.power_spectrum_bins), return_spectrum=True
+            )
+            if spectrum is not None:
+                last_spectrum = spectrum
             # Remove large tensors before averaging
-            m = {k: v for k, v in metrics.items() if k != "sample_fake"}  # pyright: ignore[reportAny]
+            m = {
+                **{k: v for k, v in metrics.items() if k != "sample_fake"},  # pyright: ignore[reportAny]
+                **recon_metrics,
+                "power_spectrum_mse": jnp.asarray(power_mse),
+            }
             for k, v in m.items():  # pyright: ignore[reportAny]
                 eval_sums[k] = eval_sums.get(k, 0.0) + float(jax.device_get(v))  # pyright: ignore[reportUnknownMemberType, reportAny]
 
@@ -521,6 +579,17 @@ def train(
                     wandb, first_batch, first_fake, transform_name=args.transform_name
                 )  # pyright: ignore[reportUnknownVariableType, reportAny]
                 wandb.log({"val/examples": imgs}, step=global_step)
+            if last_spectrum is not None:
+                k_vals, pk_pred, pk_target = last_spectrum
+                data_rows = [
+                    [float(k), float(pred), float(tgt)]
+                    for k, pred, tgt in zip(k_vals, pk_pred, pk_target)
+                ]
+                ps_table = wandb.Table(
+                    data=data_rows,
+                    columns=["k", "P_pred(k)", "P_target(k)"],
+                )
+                wandb.log({"val/power_spectrum": ps_table}, step=global_step)
 
     if use_wandb:
         wandb.finish()
@@ -671,5 +740,6 @@ if __name__ == "__main__":
     parser.add_argument("--wandb-run-name", default="nnx-cgan-256-run-4")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--generator-checkpoint-path", default=None)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--discriminator-checkpoint-path", default=None)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--power-spectrum-bins", type=int, default=64)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--add-noise", action="store_true", default=False)  # pyright: ignore[reportUnusedCallResult]
     main(parser)

@@ -10,6 +10,7 @@ import numpy as np
 import orbax.checkpoint as ocp
 import pandas as pd
 from jax import Array, lax
+from jax.scipy.special import lpmv
 
 from src.typing import Batch, TransformName
 
@@ -493,7 +494,8 @@ def power_spectrum(
     # Sum powers
     pk = jnp.empty((len(poles), n_bins))
     for i_ell, ell in enumerate(poles):
-        weights = (mmk * (2 * ell + 1) * legendre(ell)(mumesh)).reshape(-1)
+        P_ell = lpmv(0, ell, mumesh)
+        weights = (mmk * (2 * ell + 1) * P_ell).reshape(-1)
         if mesh2 is None:
             psum = jnp.bincount(dig, weights=weights, length=n_bins)
         else:  # XXX: bincount is really slow with complex numbers
