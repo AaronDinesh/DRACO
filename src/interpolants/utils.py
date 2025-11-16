@@ -101,16 +101,14 @@ def loss_per_sample_b(
     interpolant: LinearInterpolant,
     key: Array,
 ) -> Array:
-    xtp, xtm, z = interpolant.calc_antithetic_xts(t, x0, x1, key)
-
-    # Add fake batch dimension: [1, ...]
-    xtp = xtp[jnp.newaxis, ...]
-    xtm = xtm[jnp.newaxis, ...]
+    x0_batched = x0[jnp.newaxis, ...]
+    x1_batched = x1[jnp.newaxis, ...]
+    xtp, xtm, z = interpolant.calc_antithetic_xts(t, x0_batched, x1_batched, key)
     t_vec = t[jnp.newaxis, ...].reshape((1,))
     cosmos_vec = cosmos[jnp.newaxis, ...]
 
     # These were called on the original (un-unsqueezed) tensors in your torch code
-    dtIt = interpolant.dtIt(x0, x1, t)
+    dtIt = interpolant.dtIt(x0_batched, x1_batched, t)
     gamma_dot = interpolant.gamma_dot(t)
 
     # Drift evaluations (batched)
@@ -134,12 +132,9 @@ def loss_per_sample_s(
     key: Array,
 ) -> Array:
     """Compute the (variance-reduced) loss on an individual sample via antithetic sampling."""
-    # JAX version of calc_antithetic_xts
-    xtp, xtm, z = interpolant.calc_antithetic_xts(t, x0, x1, key)
-
-    # Add fake batch dimension: [1, ...]
-    xtp = xtp[jnp.newaxis, ...]
-    xtm = xtm[jnp.newaxis, ...]
+    x0_batched = x0[jnp.newaxis, ...]
+    x1_batched = x1[jnp.newaxis, ...]
+    xtp, xtm, z = interpolant.calc_antithetic_xts(t, x0_batched, x1_batched, key)
     t_vec = t[jnp.newaxis, ...].reshape((1,))
     cosmos_vec = cosmos[jnp.newaxis, ...]
 
