@@ -2,6 +2,9 @@ import math
 
 import jax
 import jax.numpy as jnp
+from jax import Array
+
+from src.interpolants.stochastic_interpolant import LinearInterpolant
 
 from .typing import Score, Velocity
 
@@ -85,15 +88,110 @@ def epsilon_schedule(t: jnp.ndarray, eps0: float = 0.1, taper: float = 0.6) -> j
     return schedule
 
 
-def loss_per_sample_b(b: Velocity, x0: Array, x1: Array, t: Array, interpolant) -> Array:
-    """Compute the (variance-reduced) loss on an individual sample via antithetic sampling."""
-    xtp, xtm, z = interpolant.calc_antithetic_xts(t, x0, x1)
-    xtp, xtm, t = xtp.unsqueeze(0), xtm.unsqueeze(0), t.unsqueeze(0)
-    dtIt = interpolant.dtIt(t, x0, x1)
+def loss_per_sample_b(
+    b: Velocity,
+    x0: Array,
+    x1: Array,
+    t: Array,
+    cosmos: Array,
+    interpolant: LinearInterpolant,
+    key: Array,
+) -> Array:
+    xtp, xtm, z = interpolant.calc_antithetic_xts(t, x0, x1, key)
+
+    # Add fake batch dimension: [1, ...]
+    xtp = xtp[jnp.newaxis, ...]
+    xtm = xtm[jnp.newaxis, ...]
+    t_vec = t[jnp.newaxis, ...].reshape((1,))
+    cosmos_vec = cosmos[jnp.newaxis, ...]
+
+    # These were called on the original (un-unsqueezed) tensors in your torch code
+    dtIt = interpolant.dtIt(x0, x1, t)
     gamma_dot = interpolant.gamma_dot(t)
-    btp = b(xtp, t)
-    btm = b(xtm, t)
-    loss = 0.5 * torch.sum(btp**2) - torch.sum((dtIt + gamma_dot * z) * btp)
-    loss += 0.5 * torch.sum(btm**2) - torch.sum((dtIt - gamma_dot * z) * btm)
+
+    # Drift evaluations (batched)
+    btp = b(xtp, t_vec, cosmos_vec)
+    btm = b(xtm, t_vec, cosmos_vec)
+
+    # Same algebra as in PyTorch
+    loss = 0.5 * jnp.sum(btp**2) - jnp.sum((dtIt + gamma_dot * z) * btp)
+    loss += 0.5 * jnp.sum(btm**2) - jnp.sum((dtIt - gamma_dot * z) * btm)
 
     return loss
+
+
+def loss_per_sample_s(
+    s: Score,
+    x0: Array,
+    x1: Array,
+    t: Array,
+    cosmos: Array,
+    interpolant: LinearInterpolant,
+    key: Array,
+) -> Array:
+    """Compute the (variance-reduced) loss on an individual sample via antithetic sampling."""
+    # JAX version of calc_antithetic_xts
+    xtp, xtm, z = interpolant.calc_antithetic_xts(t, x0, x1, key)
+
+    # Add fake batch dimension: [1, ...]
+    xtp = xtp[jnp.newaxis, ...]
+    xtm = xtm[jnp.newaxis, ...]
+    t_vec = t[jnp.newaxis, ...].reshape((1,))
+    cosmos_vec = cosmos[jnp.newaxis, ...]
+
+    # Score evaluations
+    stp = s(xtp, t_vec, cosmos_vec)
+    stm = s(xtm, t_vec, cosmos_vec)
+
+    gamma_t = interpolant.gamma(t)
+
+    loss = 0.5 * jnp.sum(stp**2) + (1.0 / gamma_t) * jnp.sum(stp * z)
+    loss += 0.5 * jnp.sum(stm**2) - (1.0 / gamma_t) * jnp.sum(stm * z)
+
+    return loss
+
+
+def batch_loss_b(
+    b: Velocity,
+    x0_batch: Array,
+    x1_batch: Array,
+    t_batch: Array,
+    cosmos_batch: Array,
+    interpolant: LinearInterpolant,
+    key: Array,
+) -> Array:
+    """Compute mean loss over a batch for the b-network."""
+
+    # Split RNG: one subkey per batch element
+    keys = jax.random.split(key, x0_batch.shape[0])
+
+    # Vectorize loss_per_sample_b over batch dimension
+    loss_fn = jax.vmap(
+        lambda x0, x1, t, c, k: loss_per_sample_b(b, x0, x1, t, c, interpolant, k),
+        in_axes=(0, 0, 0, 0, 0),
+    )
+
+    losses = loss_fn(x0_batch, x1_batch, t_batch, cosmos_batch, keys)  # shape [B]
+    return jnp.mean(losses)
+
+
+def batch_loss_s(
+    s: Score,
+    x0_batch: Array,
+    x1_batch: Array,
+    t_batch: Array,
+    cosmos_batch: Array,
+    interpolant: LinearInterpolant,
+    key: Array,
+) -> Array:
+    """Compute mean loss over a batch for the s-network."""
+
+    keys = jax.random.split(key, x0_batch.shape[0])
+
+    loss_fn = jax.vmap(
+        lambda x0, x1, t, c, k: loss_per_sample_s(s, x0, x1, t, c, interpolant, k),
+        in_axes=(0, 0, 0, 0, 0),
+    )
+
+    losses = loss_fn(x0_batch, x1_batch, t_batch, cosmos_batch, keys)
+    return jnp.mean(losses)

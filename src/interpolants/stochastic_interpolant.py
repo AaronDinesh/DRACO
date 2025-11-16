@@ -54,14 +54,22 @@ class LinearInterpolant:
         t = jnp.broadcast_to(t, (x0.shape[0], 1, 1, 1))
         return self.alpha(t) * x0 + self.beta(t) * x1
 
-    def compute_derivative(self, x0: Array, x1: Array, t: float) -> Array:
+    def calc_antithetic_xts(
+        t: float, x0: Array, x1: Array, key: Array
+    ) -> tuple[Array, Array, Array]:
+        z = jax.random.normal(key, x0.shape)
+        t = jnp.broadcast_to(t, (x0.shape[0], 1, 1, 1))
+        x_interp = self.interpolant(x0, x1, t)
+        return x_interp + self.gamma(t) * z, x_interp - self.gamma(t) * z, z
+
+    def dtIt(self, x0: Array, x1: Array, t: float) -> Array:
         def _pure_interpolant_wrapper(t_inner: float) -> Array:
             return self.interpolant(x0, x1, t_inner)
 
         return jax.grad(_pure_interpolant_wrapper)(t)
 
     def generate_xt(self, x0: Array, x1: Array, t: float, key: Array):
-        z = jax.random.normal(key, x0.shape[0])
+        z = jax.random.normal(key, x0.shape)
         t = jnp.broadcast_to(t, (x0.shape[0], 1, 1, 1))
         return self.interpolant(x0, x1, t) + self.gamma(t) * z, z
 
