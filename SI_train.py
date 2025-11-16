@@ -513,12 +513,12 @@ def main(parser: argparse.ArgumentParser):
         time_embed_dim=args.time_embed_dim,
     )
 
-    vel_params = nnx.state(vel_model, nnx.Param)
-    vel_param_count = sum(jnp.prod(x.shape) for x in jax.tree_util.tree_leaves(vel_params))
-    score_params = nnx.state(score_model, nnx.Param)
-    score_param_count = sum(jnp.prod(x.shape) for x in jax.tree_util.tree_leaves(score_params))
-    print(f"Velocity params: {vel_param_count}")
-    print(f"Score params: {score_param_count}")
+    # vel_params = nnx.state(vel_model, nnx.Param)
+    # vel_param_count = sum(jnp.prod(x.shape) for x in jax.tree_util.tree_leaves(vel_params))
+    # score_params = nnx.state(score_model, nnx.Param)
+    # score_param_count = sum(jnp.prod(x.shape) for x in jax.tree_util.tree_leaves(score_params))
+    # print(f"Velocity params: {vel_param_count}")
+    # print(f"Score params: {score_param_count}")
 
     print("----- Creating Optimizers -----")
     vel_opt = nnx.Optimizer(
