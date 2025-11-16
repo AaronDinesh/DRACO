@@ -36,8 +36,8 @@ def make_train_test_loaders(
     transform_name: TransformName = "signed_log1p",
     add_noise: bool = False,
 ):
-    input_maps = jnp.load(input_data_path, mmap_mode="r")
-    output_maps = jnp.load(output_data_path, mmap_mode="r")
+    input_maps = np.load(input_data_path, mmap_mode="r")
+    output_maps = np.load(output_data_path, mmap_mode="r")
     cosmos_params = pd.read_csv(csv_path, header=None, sep=" ")
 
     repeat_factor: int = input_maps.shape[0] // len(cosmos_params)
@@ -86,8 +86,11 @@ def make_train_test_loaders(
     def _run_epoch(
         shuffled_idx: jnp.ndarray, key: Array | None, drop_last: bool = False
     ) -> collections.abc.Generator[Batch]:
+        # Use separate keys for shuffling and per-batch noise so we
+        # get different noise realizations across batches and epochs.
         if key is not None:
-            shuffled_idx = jax.random.permutation(key=key, x=shuffled_idx)
+            key, perm_key = random.split(key)
+            shuffled_idx = random.permutation(perm_key, shuffled_idx)
 
         n = len(shuffled_idx)
         stop = (n // batch_size) * batch_size if drop_last else n
@@ -95,16 +98,18 @@ def make_train_test_loaders(
         for s in range(0, stop, batch_size):
             batch = shuffled_idx[s : s + batch_size]
 
-            inputs = (
-                _add_noise_channel(forward_transform(_add_channel_last(input_maps[batch])), key)
-                if add_noise
-                else forward_transform(_add_channel_last(input_maps[batch]))
-            )
+            batch_inputs = forward_transform(_add_channel_last(input_maps[batch]))
+            if add_noise:
+                if key is None:
+                    raise ValueError("add_noise=True requires a PRNG key")
+                key, noise_key = random.split(key)
+                batch_inputs = _add_noise_channel(batch_inputs, noise_key)
+
             targets = forward_transform(_add_channel_last(output_maps[batch]))
             params = _standardize_params(cosmos_params[batch], mu=mu, sigma=sigma)
 
             yield {
-                "inputs": inputs,
+                "inputs": batch_inputs,
                 "targets": targets,
                 "params": params,
             }
@@ -275,10 +280,12 @@ def eval_step(
 
 
 def _to_float_dict(metrics: dict[str, jnp.ndarray]) -> dict[str, float]:
-    out = {}
+    out: dict[str, float] = {}
     for k, v in metrics.items():
         if isinstance(v, jnp.ndarray):
             out[k] = float(jax.device_get(v))
+        elif isinstance(v, (float, int)):
+            out[k] = float(v)
     return out
 
 
@@ -312,9 +319,16 @@ def _wandb_images(
     targets = batch["targets"][:max_items]
     fake = fake[:max_items]
 
+    # If inputs have multiple channels (e.g., map + noise),
+    # visualize only the first channel for interpretability.
+    if inputs.ndim == 4 and inputs.shape[-1] > 1:
+        inputs_vis = inputs[..., :1]
+    else:
+        inputs_vis = inputs
+
     imgs = []
-    for i in range(min(max_items, inputs.shape[0])):
-        imgs.append(wandb.Image(_to_uint8_linear(inputs[i]), caption=f"inputs[{i}] lin"))
+    for i in range(min(max_items, inputs_vis.shape[0])):
+        imgs.append(wandb.Image(_to_uint8_linear(inputs_vis[i]), caption=f"inputs[{i}] lin"))
         imgs.append(wandb.Image(_to_uint8_linear(targets[i]), caption=f"target[{i}] lin"))
         imgs.append(wandb.Image(_to_uint8_linear(fake[i]), caption=f"fake[{i}] lin"))
     return imgs
@@ -340,8 +354,11 @@ def train(
     args: argparse.Namespace,
     **kwargs,
 ) -> None:
-    train_steps_per_epoch = math.ceil(n_train / batch_size)
-    eval_steps_per_epoch = math.ceil(n_test / batch_size)
+    # With drop_last=True in the loaders, the true number of steps is
+    # floor(n / batch_size); use that so progress bars and eval
+    # averaging match the actual number of batches.
+    train_steps_per_epoch = max(1, n_train // batch_size)
+    eval_steps_per_epoch = max(1, n_test // batch_size)
 
     cosmos_params_mu = kwargs["cosmos_params_mu"]
     cosmos_params_sigma = kwargs["cosmos_params_sigma"]
