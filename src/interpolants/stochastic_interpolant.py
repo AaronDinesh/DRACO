@@ -5,13 +5,36 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from .typing import GammaType, InterpolantCoefficient, Score, TimeSchedule, Velocity
 from .utils import make_gamma
 
-InterpolantCoefficient = Callable[[float], Array]
-TimeSchedule = Literal["linear", "cosine", "power"]
-GammaType = Literal["brownian", "a-brownian", "zero", "bsquared", "sinesquared", "sigmoid"]
-Velocity = jax.nnx.Module
-Score = jax.nnx.Module
+
+def compute_div(
+    f: Callable[[Array, Array], Array],
+    x: Array,
+    t: Array,  # [batch, ...]
+) -> Array:
+    """Compute the divergence of f(x, t) w.r.t. x for batched x.
+
+    Assumes:
+      - x has shape [bs, d]
+      - f(x, t) returns an array of shape [bs, d]
+    """
+
+    # Make a per-sample version: (d,), (...) -> (d,)
+    def f_single(x_i, t_i):
+        # f expects batched inputs, so add batch dim and remove it afterwards
+        return f(x_i[None, :], t_i[None, ...])[0]
+
+    # Divergence for a single sample
+    def div_single(x_i, t_i):
+        # Jacobian of f_single w.r.t. x_i: shape [d, d]
+        jac_x = jax.jacrev(f_single, argnums=0)(x_i, t_i)
+        # Divergence = trace of Jacobian
+        return jnp.trace(jac_x)
+
+    # Vectorize over the batch dimension
+    return jax.vmap(div_single)(x, t)
 
 
 class LinearInterpolant:
@@ -47,40 +70,68 @@ class LinearInterpolant:
 class SDEIntegrator:
     b: Velocity
     s: Score
-    eps: Array
+    eps: Array  # or float
     interpolant: LinearInterpolant
+    t_grid: Array  # shape [n_step + 1]
     n_save: int = 4
-    start_end: tuple[int, int] = (0, 1)  # pyright: ignore[reportIndexIssue]
-    n_step: int = 3000
+    start_end: Tuple[int, int] = (0, 1)  # optional, can be inferred from t_grid
+    n_step: int = 3000  # optional, can be inferred from t_grid
     n_likelihood: int = 1
 
-    def __post_init__(self) -> None:
-        """Initialize forward dynamics, reverse dynamics, and likelihood."""
+    # --- Drift and likelihood ---
 
-        def bf(x: Array, t: Array):
-            """Forward drift. Assume x is batched but t is not."""
-            self.b.to(x.device)
-            self.s.to(x.device)
-            return self.b(x, t) + self.eps * self.s(x, t)
+    def bf(self, x: Array, t: Array) -> Array:
+        """Forward drift. Assume x is batched, t broadcastable."""
+        return self.b(x, t) + self.eps * self.s(x, t)
 
-        def br(x: Array, t: Array):
-            """Backwards drift. Assume x is batched but t is not."""
-            self.b.to(x.device)
-            self.s.to(x.device)
+    def br(self, x: Array, t: Array) -> Array:
+        """Backward drift. Assume x is batched, t broadcastable."""
+        return self.b(x, t) - self.eps * self.s(x, t)
 
-            return self.b(x, t) - self.eps * self.s(x, t)
+    def dt_logp(self, x: Array, t: Array) -> Array:
+        """Time derivative of log-likelihood (integrating from 1 to 0)."""
+        score = self.s(x, t)  # [B, ...]
+        s_norm = jnp.linalg.norm(score, axis=-1) ** 2  # [B]
+        return -(compute_div(self.bf, x, t) + self.eps * s_norm)
 
-        def dt_logp(x: torch.tensor, t: torch.tensor):
-            """Time derivative of the log-likelihood, assumed integrating from 1 to 0.
-            Assume x is batched but t is not.
-            """
-            score = self.s(x, t)
-            s_norm = jnp.linalg.norm(score, axis=-1) ** 2
-            return -(compute_div(self.bf, x, t) + self.eps * s_norm)
+    # --- Integrators ---
 
-        self.bf = bf
-        self.br = br
-        self.dt_logp = dt_logp
-        self.start, self.end = self.start_end[0], self.start_end[1]
-        self.ts = torch.linspace(self.start, self.end, self.n_step)
-        self.dt = self.ts[1] - self.ts[0]
+    def step_forward_heun(self, x: Array, t: Array, key: Array, dt: Array) -> Array:
+        """Forward-time Heun step (https://arxiv.org/pdf/2206.00364.pdf, Alg. 2)."""
+        dW = jnp.sqrt(dt) * jax.random.normal(key, x.shape)
+        xhat = x + jnp.sqrt(2.0 * self.eps) * dW
+        K1 = self.bf(xhat, t + dt)
+        xp = xhat + dt * K1
+        K2 = self.bf(xp, t + dt)
+        return xhat + 0.5 * dt * (K1 + K2)
+
+    def step_reverse_heun(self, x: Array, t: Array, key: Array, dt: Array) -> Array:
+        """Reverse-time Heun step."""
+        dW = jnp.sqrt(dt) * jax.random.normal(key, x.shape)
+        xhat = x + jnp.sqrt(2.0 * self.eps) * dW
+        K1 = self.br(xhat, t - dt)
+        xp = xhat - dt * K1
+        K2 = self.br(xp, t - dt)
+        return xhat - 0.5 * dt * (K1 + K2)
+
+    # --- Rollout ---
+
+    def forward_rollout(self, x0: Array, key: Array) -> Array:
+        t_grid = self.t_grid
+
+        def _integrator(i, state):
+            x, key = state
+            key, sub_key = jax.random.split(key)
+
+            B = x.shape[0]
+            t_i = jnp.broadcast_to(t_grid[i], (B, 1, 1, 1))
+            t_ip1 = jnp.broadcast_to(t_grid[i + 1], (B, 1, 1, 1))
+            dt = t_ip1 - t_i
+
+            xn = self.step_forward_heun(x, t_i, sub_key, dt)
+            return (xn, key)
+
+        # If you trust t_grid, you can infer n_step from it:
+        n_step = t_grid.shape[0] - 1
+        X, _ = jax.lax.fori_loop(0, n_step, _integrator, (x0, key))
+        return X

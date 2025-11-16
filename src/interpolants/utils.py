@@ -3,6 +3,8 @@ import math
 import jax
 import jax.numpy as jnp
 
+from .typing import Score, Velocity
+
 
 # Inspired by https://github.com/malbergo/stochastic-interpolants/blob/main/interflow/fabrics.py
 def make_gamma(gamma_type: str = "brownian", a: float | None = None):
@@ -58,28 +60,6 @@ def make_gamma(gamma_type: str = "brownian", a: float | None = None):
     return gamma, gamma_dot, gg_dot
 
 
-##### Stochastic Interpolant helpers
-def gamma_and_deriv(
-    t: jnp.ndarray, a: float = 1.0, eps: float = 1e-12
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    t = jnp.clip(t, eps, 1.0 - eps)
-    num = 2.0 * a * t * (1.0 - t)
-    gamma = jnp.sqrt(num)
-    gamma_dot = a * (1.0 - 2.0 * t) / jnp.maximum(gamma, eps)
-    return gamma, gamma_dot
-
-
-def make_xt_and_targets(
-    x0: jnp.ndarray, x1: jnp.ndarray, z: jnp.ndarray, time: jnp.ndarray, a: float = 1.0
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    interpolant = (1.0 - time)[:, None, None, None] * x0 + time[:, None, None, None] * x1
-    gamma, gamma_dot = gamma_and_deriv(time, a=a)
-    x_t = interpolant + gamma[:, None, None, None] * z
-    dInterpolant = x1 - x0
-    gdot_z = gamma_dot[:, None, None, None] * z
-    return x_t, dInterpolant, gdot_z
-
-
 def build_t_grid(
     n_steps: int,
     endpoint_clip: float = 1e-12,
@@ -103,3 +83,17 @@ def build_t_grid(
 def epsilon_schedule(t: jnp.ndarray, eps0: float = 0.1, taper: float = 0.6) -> jnp.ndarray:
     schedule = eps0 * (t * (1.0 - t)) ** taper
     return schedule
+
+
+def loss_per_sample_b(b: Velocity, x0: Array, x1: Array, t: Array, interpolant) -> Array:
+    """Compute the (variance-reduced) loss on an individual sample via antithetic sampling."""
+    xtp, xtm, z = interpolant.calc_antithetic_xts(t, x0, x1)
+    xtp, xtm, t = xtp.unsqueeze(0), xtm.unsqueeze(0), t.unsqueeze(0)
+    dtIt = interpolant.dtIt(t, x0, x1)
+    gamma_dot = interpolant.gamma_dot(t)
+    btp = b(xtp, t)
+    btm = b(xtm, t)
+    loss = 0.5 * torch.sum(btp**2) - torch.sum((dtIt + gamma_dot * z) * btp)
+    loss += 0.5 * torch.sum(btm**2) - torch.sum((dtIt - gamma_dot * z) * btm)
+
+    return loss
