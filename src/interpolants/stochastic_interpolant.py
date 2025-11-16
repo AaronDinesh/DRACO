@@ -66,7 +66,7 @@ class LinearInterpolant:
         def _pure_interpolant_wrapper(t_inner: float) -> Array:
             return self.interpolant(x0, x1, t_inner)
 
-        return jax.grad(_pure_interpolant_wrapper)(t)
+        return jax.jacfwd(_pure_interpolant_wrapper)(t)
 
     def generate_xt(self, x0: Array, x1: Array, t: float, key: Array):
         z = jax.random.normal(key, x0.shape)
