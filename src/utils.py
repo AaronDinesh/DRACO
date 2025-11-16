@@ -395,6 +395,24 @@ def batch_metrics(pred: jnp.ndarray, tgt: jnp.ndarray) -> dict[str, jnp.ndarray]
 
 
 ## https://github.com/DifferentiableUniverseInitiative/JaxPM/blob/main/jaxpm/utils.py
+def _legendre_p(n: int, x: jnp.ndarray) -> jnp.ndarray:
+    """Compute the Legendre polynomial P_n(x) via recurrence."""
+    p0 = jnp.ones_like(x)
+    if n == 0:
+        return p0
+    p1 = x
+    if n == 1:
+        return p1
+
+    def body(i, state):
+        p_nm2, p_nm1 = state
+        p_n = ((2 * i - 1) * x * p_nm1 - (i - 1) * p_nm2) / i
+        return (p_nm1, p_n)
+
+    _, p_n = lax.fori_loop(2, n + 1, body, (p0, p1))
+    return p_n
+
+
 def _initialize_pk(mesh_shape, box_shape, kedges, los):
     """
     Parameters
@@ -423,13 +441,13 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
     """
     kmax = np.pi * np.min(mesh_shape / box_shape)  # = knyquist
 
-    if isinstance(kedges, None | int | float):
+    if kedges is None or isinstance(kedges, (int, float)):
         if kedges is None:
             dk = 2 * np.pi / np.min(box_shape) * 2  # twice the minimum wavenumber
-        if isinstance(kedges, int):
+        elif isinstance(kedges, int):
             dk = kmax / (kedges + 1)  # final number of bins will be kedges-1
-        elif isinstance(kedges, float):
-            dk = kedges
+        else:
+            dk = float(kedges)
         kedges = np.arange(dk, kmax, dk) + dk / 2  # from dk/2 to kmax-dk/2
 
     kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
@@ -437,7 +455,7 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
         (2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
         for m, l, kshape in zip(mesh_shape, box_shape, kshapes)
     ]
-    kmesh = jnp.sqrt(sum(ki**2 for ki in kvec))
+    kmesh = np.sqrt(sum(ki**2 for ki in kvec))
 
     dig = np.digitize(kmesh.reshape(-1), kedges)
     kcount = np.bincount(dig, minlength=len(kedges) + 1)
@@ -481,8 +499,12 @@ def power_spectrum(
         los = np.asarray(los)
         los = los / np.linalg.norm(los)
     poles = np.atleast_1d(multipoles)
-    dig, kcount, kavg, mumesh = _initialize_pk(mesh_shape, box_shape, kedges, los)
-    n_bins = len(kavg) + 2
+    dig_np, kcount_np, kavg_np, mumesh_np = _initialize_pk(mesh_shape, box_shape, kedges, los)
+    n_bins = len(kavg_np) + 2
+    dig = jnp.asarray(dig_np)
+    kcount = jnp.asarray(kcount_np)
+    kavg = np.asarray(kavg_np)
+    mumesh = jnp.asarray(mumesh_np)
 
     # FFTs
     meshk = jnp.fft.fftn(mesh, norm="ortho")
@@ -494,7 +516,7 @@ def power_spectrum(
     # Sum powers
     pk = jnp.empty((len(poles), n_bins))
     for i_ell, ell in enumerate(poles):
-        P_ell = lpmv(0, ell, mumesh)
+        P_ell = _legendre_p(ell, mumesh)
         weights = (mmk * (2 * ell + 1) * P_ell).reshape(-1)
         if mesh2 is None:
             psum = jnp.bincount(dig, weights=weights, length=n_bins)
@@ -505,7 +527,8 @@ def power_spectrum(
         pk = pk.at[i_ell].set(psum)
 
     # Normalization and conversion from cell units to [Mpc/h]^3
-    pk = (pk / kcount)[:, 1:-1] * (box_shape / mesh_shape).prod()
+    volume_scale = float(np.prod(box_shape / mesh_shape))
+    pk = (pk / kcount)[:, 1:-1] * volume_scale
 
     # pk = jnp.concatenate([kavg[None], pk])
     if np.ndim(multipoles) == 0:
