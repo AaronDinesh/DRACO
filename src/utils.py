@@ -10,7 +10,6 @@ import numpy as np
 import orbax.checkpoint as ocp
 import pandas as pd
 from jax import Array, lax
-from jax.scipy.special import lpmv
 
 from src.typing import Batch, TransformName
 
