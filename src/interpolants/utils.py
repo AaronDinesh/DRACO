@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import math
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from src.interpolants.stochastic_interpolant import LinearInterpolant
-
 from .typing import Score, Velocity
+
+if TYPE_CHECKING:
+    from src.interpolants.stochastic_interpolant import LinearInterpolant
 
 
 # Inspired by https://github.com/malbergo/stochastic-interpolants/blob/main/interflow/fabrics.py
