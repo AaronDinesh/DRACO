@@ -151,10 +151,11 @@ class Discriminator(nnx.Module):
     def __init__(
         self,
         key: Array,
-        in_channels: int,
+        input_channels: int,
         condition_dim: int,
         condition_proj_dim: int,
         base_conv_dim: int = 64,
+        target_channels: int | None = None,
     ):
         (
             condition_projection_key,
@@ -170,9 +171,12 @@ class Discriminator(nnx.Module):
             rngs=nnx.Rngs(condition_projection_key),
         )
 
+        target_channels = target_channels if target_channels is not None else input_channels
+        total_in_features = input_channels + target_channels + condition_proj_dim
+
         self.conv1: SpectralNorm = SpectralNorm(
             module=nnx.Conv(
-                in_features=2 * in_channels + condition_proj_dim,
+                in_features=total_in_features,
                 out_features=base_conv_dim,
                 strides=2,
                 kernel_size=(4, 4),
@@ -233,9 +237,7 @@ class Discriminator(nnx.Module):
         (batch, height, width, _) = inputs.shape
 
         # Project and turn in into [B, 1, 1, condition_proj_dim]
-        condition_params_proj = self.condition_projection(condition_params)[
-            :, None, None, :
-        ]
+        condition_params_proj = self.condition_projection(condition_params)[:, None, None, :]
 
         condition_params_proj = jnp.broadcast_to(
             condition_params_proj, (batch, height, width, self.condition_proj_dim)

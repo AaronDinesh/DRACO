@@ -587,9 +587,10 @@ def main(parser: argparse.ArgumentParser):
     print("----- Creating Discriminator -----")
     discriminator = src.Discriminator(
         key=disc_key,
-        in_channels=input_features_size,
+        input_channels=input_features_size,
         condition_dim=cosmos_params_len,
         condition_proj_dim=8,
+        target_channels=int(args.img_channels),
     )
 
     # params = nnx.state(generator, nnx.Param)
