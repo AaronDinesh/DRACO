@@ -70,6 +70,46 @@ def _score_loss(
     return batch_loss_s(conditioned_s, x0, x1, t_batch, cosmos, interpolant, key)
 
 
+@nnx.jit(static_argnums=(5,))
+def _velocity_step(
+    model: StochasticInterpolantUNet,
+    optimizer,
+    batch: Batch,
+    t_batch: jnp.ndarray,
+    key: Array,
+    interpolant: LinearInterpolant,
+) -> dict[str, jnp.ndarray]:
+    def loss_fn(model: StochasticInterpolantUNet) -> jnp.ndarray:
+        return _velocity_loss(model, batch, t_batch, interpolant, key)
+
+    loss, grads = nnx.value_and_grad(loss_fn)(model)
+    optimizer.update(model=model, grads=grads)
+    return {
+        "b_loss": loss,
+        "b_t_mean": jnp.mean(t_batch),
+    }
+
+
+@nnx.jit(static_argnums=(5,))
+def _score_step(
+    model: StochasticInterpolantUNet,
+    optimizer,
+    batch: Batch,
+    t_batch: jnp.ndarray,
+    key: Array,
+    interpolant: LinearInterpolant,
+) -> dict[str, jnp.ndarray]:
+    def loss_fn(model: StochasticInterpolantUNet) -> jnp.ndarray:
+        return _score_loss(model, batch, t_batch, interpolant, key)
+
+    loss, grads = nnx.value_and_grad(loss_fn)(model)
+    optimizer.update(model=model, grads=grads)
+    return {
+        "s_loss": loss,
+        "s_t_mean": jnp.mean(t_batch),
+    }
+
+
 def _power_spectrum_values(final_img: jnp.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
     mesh = final_img
     if mesh.ndim == 3 and mesh.shape[-1] == 1:
@@ -246,25 +286,23 @@ def train(
                 dtype=batch["inputs"].dtype,
             )
 
-            def vel_loss_fn(model: StochasticInterpolantUNet):
-                return _velocity_loss(model, batch, vel_t_batch, interpolant, vel_loss_key)
+            vel_metrics = _velocity_step(
+                vel_model,
+                vel_opt,
+                batch,
+                vel_t_batch,
+                vel_loss_key,
+                interpolant,
+            )
 
-            vel_loss, vel_grads = nnx.value_and_grad(vel_loss_fn)(vel_model)
-            vel_opt.update(model=vel_model, grads=vel_grads)
-            vel_metrics = {
-                "b_loss": vel_loss,
-                "b_t_mean": jnp.mean(vel_t_batch),
-            }
-
-            def score_loss_fn(model: StochasticInterpolantUNet):
-                return _score_loss(model, batch, score_t_batch, interpolant, score_loss_key)
-
-            score_loss, score_grads = nnx.value_and_grad(score_loss_fn)(score_model)
-            score_opt.update(model=score_model, grads=score_grads)
-            score_metrics = {
-                "s_loss": score_loss,
-                "s_t_mean": jnp.mean(score_t_batch),
-            }
+            score_metrics = _score_step(
+                score_model,
+                score_opt,
+                batch,
+                score_t_batch,
+                score_loss_key,
+                interpolant,
+            )
 
             step += 1
             global_step += 1
