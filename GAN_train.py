@@ -80,7 +80,9 @@ def make_train_test_loaders(
 
     def _add_noise_channel(x: jnp.ndarray, key: Array | None):
         # x is (N,h,W,C); we return (N,H,W,C+1)
-        noise = jax.random.normal(key, shape=x.shape[:-1] + (1,), dtype=x.dtype)
+        sigma = 0.1
+
+        noise = sigma * jax.random.normal(key, shape=x.shape[:-1] + (1,), dtype=x.dtype)
         return jnp.concatenate((x, noise), axis=-1)
 
     def _run_epoch(
