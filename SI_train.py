@@ -595,7 +595,7 @@ if __name__ == "__main__":
     parser.add_argument("--cosmos-params", type=str, required=True)
     parser.add_argument("--checkpoint-dir", type=str, required=True)
     parser.add_argument("--img-channels", type=int, default=1)
-    parser.add_argument("--transform-name", type=TransformName, default="signed_log1p")
+    parser.add_argument("--transform-name", type=TransformName, default="log10")
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--vel-lr", type=float, default=2e-4)
     parser.add_argument("--score-lr", type=float, default=2e-4)

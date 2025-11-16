@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Callable, Literal, Tuple
 
 import jax
 import jax.numpy as jnp
