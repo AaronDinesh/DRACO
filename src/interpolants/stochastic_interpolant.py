@@ -55,7 +55,7 @@ class LinearInterpolant:
         return self.alpha(t) * x0 + self.beta(t) * x1
 
     def calc_antithetic_xts(
-        t: float, x0: Array, x1: Array, key: Array
+        self, t: float, x0: Array, x1: Array, key: Array
     ) -> tuple[Array, Array, Array]:
         z = jax.random.normal(key, x0.shape)
         t = jnp.broadcast_to(t, (x0.shape[0], 1, 1, 1))
