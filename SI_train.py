@@ -568,7 +568,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma-type", type=str, default="brownian")
     parser.add_argument("--gamma-a", type=float, default=1.0)
     parser.add_argument("--eps", type=float, default=1e-2)
-    parser.add_argument("--integrator-steps", type=int, default=100)
+    parser.add_argument("--integrator-steps", type=int, default=1000)
     parser.add_argument("--n-save", type=int, default=4)
     parser.add_argument("--n-likelihood", type=int, default=1)
     parser.add_argument("--eval-batches", type=int, default=2)
