@@ -5,6 +5,7 @@ from typing import Iterator
 import jax
 import jax.numpy as jnp
 import jax.random as random
+import matplotlib.pyplot as plt
 import numpy as np
 import optax
 from dotenv import load_dotenv
@@ -47,9 +48,7 @@ def _velocity_loss(
     x1 = batch["targets"]
     cosmos = batch["params"]
 
-    def conditioned_b(
-        x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray
-    ) -> jnp.ndarray:
+    def conditioned_b(x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray) -> jnp.ndarray:
         return model(x, cosmos_vec, t)
 
     return batch_loss_b(conditioned_b, x0, x1, t_batch, cosmos, interpolant, key)
@@ -66,9 +65,7 @@ def _score_loss(
     x1 = batch["targets"]
     cosmos = batch["params"]
 
-    def conditioned_s(
-        x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray
-    ) -> jnp.ndarray:
+    def conditioned_s(x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray) -> jnp.ndarray:
         return model(x, cosmos_vec, t)
 
     return batch_loss_s(conditioned_s, x0, x1, t_batch, cosmos, interpolant, key)
@@ -114,9 +111,7 @@ def _score_step(
     }
 
 
-def _power_spectrum_values(
-    final_img: jnp.ndarray, bins: int
-) -> tuple[np.ndarray, np.ndarray]:
+def _power_spectrum_values(final_img: jnp.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
     mesh = final_img
     if mesh.ndim == 3 and mesh.shape[-1] == 1:
         mesh = mesh[..., 0]
@@ -126,14 +121,20 @@ def _power_spectrum_values(
 
 def _power_spectrum_metrics(
     preds: jnp.ndarray, targets: jnp.ndarray, bins: int
-) -> tuple[float, tuple[np.ndarray, np.ndarray, np.ndarray] | None]:
+) -> tuple[
+    float,
+    tuple[np.ndarray, np.ndarray, np.ndarray],
+    list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None,
+]:
     batch_mses: list[float] = []
+    spectra = []
     representative: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
     for pred, target in zip(preds, targets):
         k_pred, pk_pred = _power_spectrum_values(pred, bins)
         _, pk_target = _power_spectrum_values(target, bins)
         min_len = min(len(pk_pred), len(pk_target))
+        spectra.append((k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len]))
         if min_len == 0:
             continue
         diff = pk_pred[:min_len] - pk_target[:min_len]
@@ -142,7 +143,7 @@ def _power_spectrum_metrics(
             representative = (k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len])
 
     mse = float(np.mean(batch_mses)) if batch_mses else 0.0
-    return mse, representative
+    return mse, representative, spectra
 
 
 def eval_step(
@@ -314,12 +315,8 @@ def train(
             global_step += 1
 
             if step % log_every == 0 or step == train_steps_per_epoch:
-                vel_log = {
-                    f"train/{k}": v for k, v in _to_float_dict(vel_metrics).items()
-                }
-                score_log = {
-                    f"train/{k}": v for k, v in _to_float_dict(score_metrics).items()
-                }
+                vel_log = {f"train/{k}": v for k, v in _to_float_dict(vel_metrics).items()}
+                score_log = {f"train/{k}": v for k, v in _to_float_dict(score_metrics).items()}
                 log = {"epoch": epoch, "step": global_step} | vel_log | score_log
                 last_vel_log = vel_log
                 last_score_log = score_log
@@ -383,7 +380,7 @@ def train(
                 )
                 final_preds = preds
                 last_eval_batch = batch
-                ps_mse, spectrum = _power_spectrum_metrics(
+                ps_mse, spectrum, all_spectra = _power_spectrum_metrics(
                     preds, batch["targets"], args.power_spectrum_bins
                 )
                 metrics = dict(metrics)
@@ -391,13 +388,24 @@ def train(
                 if spectrum is not None:
                     last_spectrum = spectrum
                 eval_metrics_accum = (
-                    {
-                        k: eval_metrics_accum.get(k, 0.0) + float(v)
-                        for k, v in metrics.items()
-                    }
+                    {k: eval_metrics_accum.get(k, 0.0) + float(v) for k, v in metrics.items()}
                     if eval_metrics_accum
                     else {k: float(v) for k, v in metrics.items()}
                 )
+
+                figs = []
+                for i, item in enumerate(all_spectra):
+                    x, pred_spectra, target_spcetra = item
+                    fig, ax = plt.subplots(figsize=(6, 4))
+
+                    ax.plot(x, pred_spectra, label="generated")
+                    ax.plot(x, target_spcetra, label="target")
+                    ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
+                    ax.set_xlabel("Wave number k [h/Mpc]")  # ← X-axis label
+                    ax.set_ylabel("P(k)")  # ← Y-axis label
+                    figs.append(fig)
+                    plt.close(fig)
+
                 eval_count += 1
                 eval_bar.set_postfix(
                     psnr=float(metrics.get("psnr", 0.0)),
@@ -405,14 +413,8 @@ def train(
                 )
             eval_bar.close()
 
-            if (
-                eval_count > 0
-                and final_preds is not None
-                and last_eval_batch is not None
-            ):
-                avg_eval_metrics = {
-                    k: v / eval_count for k, v in eval_metrics_accum.items()
-                }
+            if eval_count > 0 and final_preds is not None and last_eval_batch is not None:
+                avg_eval_metrics = {k: v / eval_count for k, v in eval_metrics_accum.items()}
                 eval_log = {f"eval/{k}": v for k, v in avg_eval_metrics.items()}
                 print(
                     f"[Epoch {epoch:03d} Eval] "
@@ -421,6 +423,8 @@ def train(
 
                 if use_wandb:
                     wandb.log(eval_log, step=global_step)
+
+                    wandb.log({"plots": [wandb.Image(f) for f in figs]}, step=global_step)
 
                     panel = wandb_image_panel(
                         wandb,
@@ -431,46 +435,46 @@ def train(
                     )
                     wandb.log({"eval/images": panel}, step=global_step)
 
-                    final_img = final_preds[0]
-                    final_target = last_eval_batch["targets"][0]
-                    if last_spectrum is not None:
-                        k_vals, pk_pred, pk_target = last_spectrum
-                        data_rows = [
-                            [float(k), float(pred), float(tgt)]
-                            for k, pred, tgt in zip(k_vals, pk_pred, pk_target)
-                        ]
-                        ps_table = wandb.Table(
-                            data=data_rows,
-                            columns=["k", "P_pred(k)", "P_target(k)"],
-                        )
-                        wandb.log(
-                            {
-                                "eval/final_image": wandb.Image(
-                                    np.asarray(final_img[..., 0]),
-                                    caption=f"Epoch {epoch:03d} rollout",
-                                ),
-                                "eval/final_target": wandb.Image(
-                                    np.asarray(final_target[..., 0]),
-                                    caption=f"Epoch {epoch:03d} target",
-                                ),
-                                "eval/power_spectrum": ps_table,
-                            },
-                            step=global_step,
-                        )
-                    else:
-                        wandb.log(
-                            {
-                                "eval/final_image": wandb.Image(
-                                    np.asarray(final_img[..., 0]),
-                                    caption=f"Epoch {epoch:03d} rollout",
-                                ),
-                                "eval/final_target": wandb.Image(
-                                    np.asarray(final_target[..., 0]),
-                                    caption=f"Epoch {epoch:03d} target",
-                                ),
-                            },
-                            step=global_step,
-                        )
+                    # final_img = final_preds[0]
+                    # final_target = last_eval_batch["targets"][0]
+                    # if last_spectrum is not None:
+                    #     k_vals, pk_pred, pk_target = last_spectrum
+                    #     data_rows = [
+                    #         [float(k), float(pred), float(tgt)]
+                    #         for k, pred, tgt in zip(k_vals, pk_pred, pk_target)
+                    #     ]
+                    #     ps_table = wandb.Table(
+                    #         data=data_rows,
+                    #         columns=["k", "P_pred(k)", "P_target(k)"],
+                    #     )
+                    #     wandb.log(
+                    #         {
+                    #             "eval/final_image": wandb.Image(
+                    #                 np.asarray(final_img[..., 0]),
+                    #                 caption=f"Epoch {epoch:03d} rollout",
+                    #             ),
+                    #             "eval/final_target": wandb.Image(
+                    #                 np.asarray(final_target[..., 0]),
+                    #                 caption=f"Epoch {epoch:03d} target",
+                    #             ),
+                    #             # "eval/power_spectrum": ps_table,
+                    #         },
+                    #         step=global_step,
+                    #     )
+                    # else:
+                    #     wandb.log(
+                    #         {
+                    #             "eval/final_image": wandb.Image(
+                    #                 np.asarray(final_img[..., 0]),
+                    #                 caption=f"Epoch {epoch:03d} rollout",
+                    #             ),
+                    #             "eval/final_target": wandb.Image(
+                    #                 np.asarray(final_target[..., 0]),
+                    #                 caption=f"Epoch {epoch:03d} target",
+                    #             ),
+                    #         },
+                    #         step=global_step,
+                    #     )
 
     save_checkpoint(
         args.checkpoint_dir,
@@ -552,9 +556,7 @@ def main(parser: argparse.ArgumentParser):
     )
 
     if args.velocity_checkpoint_path:
-        print(
-            f"----- Loading Velocity Model from {args.velocity_checkpoint_path} -----"
-        )
+        print(f"----- Loading Velocity Model from {args.velocity_checkpoint_path} -----")
         restore_checkpoint(args.velocity_checkpoint_path, vel_model, vel_opt)
 
     if args.score_checkpoint_path:
@@ -568,9 +570,7 @@ def main(parser: argparse.ArgumentParser):
         t_schedule="linear",
         gamma_type=args.gamma_type,
     )
-    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(
-        gamma_type=args.gamma_type, a=args.gamma_a
-    )
+    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(gamma_type=args.gamma_type, a=args.gamma_a)
     interpolant.gamma = gamma_fn
     interpolant.gamma_dot = gamma_dot_fn
     interpolant.gg_dot = gg_dot_fn
@@ -611,7 +611,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--log-rate", type=int, default=5)
-    parser.add_argument("--eval-rate", type=int, default=2)
+    parser.add_argument("--eval-rate", type=int, default=5)
     parser.add_argument("--checkpoint-rate", type=int, default=10)
     parser.add_argument("--input-maps", type=str, required=True)
     parser.add_argument("--output-maps", type=str, required=True)
@@ -629,7 +629,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma-type", type=str, default="brownian")
     parser.add_argument("--gamma-a", type=float, default=1.0)
     parser.add_argument("--eps", type=float, default=1e-2)
-    parser.add_argument("--integrator-steps", type=int, default=1000)
+    parser.add_argument("--integrator-steps", type=int, default=500)
     parser.add_argument("--n-save", type=int, default=4)
     parser.add_argument("--n-likelihood", type=int, default=1)
     parser.add_argument("--eval-batches", type=int, default=4)

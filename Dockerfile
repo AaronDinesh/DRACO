@@ -22,7 +22,7 @@ RUN apt-get update && \
 
 RUN python3 --version && python3 -m pip --version
 
-RUN pip install numpy optax orbax-checkpoint pandas pillow python-dotenv tqdm wandb
+RUN pip install numpy optax orbax-checkpoint pandas pillow python-dotenv tqdm wandb matplotlib
 
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import jax.random as random
+import matplotlib.pyplot as plt
 import numpy as np
 import optax
 import pandas as pd
@@ -348,26 +349,30 @@ def _power_spectrum_values(final_img: jnp.ndarray, bins: int) -> tuple[np.ndarra
 
 
 def _power_spectrum_metrics(
-    preds: jnp.ndarray, targets: jnp.ndarray, bins: int, return_spectrum: bool = False
-) -> tuple[float, tuple[np.ndarray, np.ndarray, np.ndarray] | None]:
-    preds_np = np.asarray(jax.device_get(preds))
-    targets_np = np.asarray(jax.device_get(targets))
+    preds: jnp.ndarray, targets: jnp.ndarray, bins: int
+) -> tuple[
+    float,
+    tuple[np.ndarray, np.ndarray, np.ndarray],
+    list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None,
+]:
     batch_mses: list[float] = []
+    spectra = []
     representative: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
-    for pred, target in zip(preds_np, targets_np):
+    for pred, target in zip(preds, targets):
         k_pred, pk_pred = _power_spectrum_values(pred, bins)
         _, pk_target = _power_spectrum_values(target, bins)
         min_len = min(len(pk_pred), len(pk_target))
+        spectra.append((k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len]))
         if min_len == 0:
             continue
         diff = pk_pred[:min_len] - pk_target[:min_len]
         batch_mses.append(float(np.mean(np.square(diff))))
-        if representative is None and return_spectrum:
+        if representative is None:
             representative = (k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len])
 
     mse = float(np.mean(batch_mses)) if batch_mses else 0.0
-    return mse, representative
+    return mse, representative, spectra
 
 
 def train(
@@ -466,9 +471,22 @@ def train(
                 fake_images = g_metrics.pop("sample_fake", None)
                 if fake_images is not None:
                     recon_metrics = batch_metrics(fake_images, batch["targets"])
-                    power_mse, _ = _power_spectrum_metrics(
+                    power_mse, _, all_spectra = _power_spectrum_metrics(
                         fake_images, batch["targets"], int(args.power_spectrum_bins)
                     )
+
+                    figs = []
+                    for i, item in enumerate(all_spectra):
+                        x, pred_spectra, target_spcetra = item
+                        fig, ax = plt.subplots(figsize=(6, 4))
+                        ax.plot(x, pred_spectra, label="generated")
+                        ax.plot(x, target_spcetra, label="target")
+                        ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
+                        ax.set_xlabel("Wave number k [h/Mpc]")  # ← X-axis label
+                        ax.set_ylabel("P(k)")  # ← Y-axis label
+                        figs.append(fig)
+                        plt.close(fig)
+
                     g_metrics = {
                         **g_metrics,
                         **recon_metrics,
@@ -490,6 +508,7 @@ def train(
                 )
                 if use_wandb:
                     wandb.log(log, step=global_step)
+                    wandb.log({"plots": [wandb.Image(f) for f in figs]}, step=global_step)
 
         if epoch % 10 == 0:
             save_checkpoint(
