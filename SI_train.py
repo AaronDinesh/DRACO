@@ -1,6 +1,6 @@
 import argparse
 import math
-from typing import Iterator
+from typing import Any, Iterator
 
 import jax
 import jax.numpy as jnp
@@ -354,6 +354,7 @@ def train(
             final_preds = None
             last_eval_batch: Batch | None = None
             last_spectrum: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+            eval_spectrum_figs: list[Any] = []
             eval_bar = tqdm(
                 range(eval_batches),
                 total=eval_batches,
@@ -393,18 +394,19 @@ def train(
                     else {k: float(v) for k, v in metrics.items()}
                 )
 
-                figs = []
-                for i, item in enumerate(all_spectra):
-                    x, pred_spectra, target_spcetra = item
-                    fig, ax = plt.subplots(figsize=(6, 4))
-
-                    ax.plot(x, pred_spectra, label="generated")
-                    ax.plot(x, target_spcetra, label="target")
-                    ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
-                    ax.set_xlabel("Wave number k [h/Mpc]")  # ← X-axis label
-                    ax.set_ylabel("P(k)")  # ← Y-axis label
-                    figs.append(fig)
-                    plt.close(fig)
+                if use_wandb and all_spectra:
+                    batch_figs: list[Any] = []
+                    for i, item in enumerate(all_spectra):
+                        x, pred_spectra, target_spectra = item
+                        fig, ax = plt.subplots(figsize=(6, 4))
+                        ax.plot(x, pred_spectra, label="generated")
+                        ax.plot(x, target_spectra, label="target")
+                        ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
+                        ax.set_xlabel("Wave number k [h/Mpc]")
+                        ax.set_ylabel("P(k)")
+                        batch_figs.append(fig)
+                        plt.close(fig)
+                    eval_spectrum_figs.extend(batch_figs)
 
                 eval_count += 1
                 eval_bar.set_postfix(
@@ -424,7 +426,11 @@ def train(
                 if use_wandb:
                     wandb.log(eval_log, step=global_step)
 
-                    wandb.log({"plots": [wandb.Image(f) for f in figs]}, step=global_step)
+                    if eval_spectrum_figs:
+                        wandb.log(
+                            {"eval/power_spectra": [wandb.Image(f) for f in eval_spectrum_figs]},
+                            step=global_step,
+                        )
 
                     panel = wandb_image_panel(
                         wandb,

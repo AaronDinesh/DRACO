@@ -2,6 +2,7 @@ import argparse
 import collections.abc
 import math
 from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -471,26 +472,9 @@ def train(
                 fake_images = g_metrics.pop("sample_fake", None)
                 if fake_images is not None:
                     recon_metrics = batch_metrics(fake_images, batch["targets"])
-                    power_mse, _, all_spectra = _power_spectrum_metrics(
-                        fake_images, batch["targets"], int(args.power_spectrum_bins)
-                    )
-
-                    figs = []
-                    for i, item in enumerate(all_spectra):
-                        x, pred_spectra, target_spcetra = item
-                        fig, ax = plt.subplots(figsize=(6, 4))
-                        ax.plot(x, pred_spectra, label="generated")
-                        ax.plot(x, target_spcetra, label="target")
-                        ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
-                        ax.set_xlabel("Wave number k [h/Mpc]")  # ← X-axis label
-                        ax.set_ylabel("P(k)")  # ← Y-axis label
-                        figs.append(fig)
-                        plt.close(fig)
-
                     g_metrics = {
                         **g_metrics,
                         **recon_metrics,
-                        "power_spectrum_mse": jnp.asarray(power_mse),
                     }
 
             global_step += 1
@@ -508,7 +492,6 @@ def train(
                 )
                 if use_wandb:
                     wandb.log(log, step=global_step)
-                    wandb.log({"plots": [wandb.Image(f) for f in figs]}, step=global_step)
 
         if epoch % 10 == 0:
             save_checkpoint(
@@ -529,6 +512,7 @@ def train(
         first_fake = None
         first_batch = None
         last_spectrum: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        eval_spectrum_figs: list[Any] = []
 
         for batch in tqdm(
             test_loader(key=test_key, drop_last=True),
@@ -543,11 +527,24 @@ def train(
                 first_batch = batch
             fake_images = metrics["sample_fake"]  # pyright: ignore[reportAny]
             recon_metrics = batch_metrics(fake_images, batch["targets"])
-            power_mse, spectrum = _power_spectrum_metrics(
-                fake_images, batch["targets"], int(args.power_spectrum_bins), return_spectrum=True
+            power_mse, spectrum, batch_spectra = _power_spectrum_metrics(
+                fake_images, batch["targets"], int(args.power_spectrum_bins)
             )
             if spectrum is not None:
                 last_spectrum = spectrum
+            if use_wandb and batch_spectra:
+                batch_figs: list[Any] = []
+                for i, item in enumerate(batch_spectra):
+                    x, pred_spectra, target_spectra = item
+                    fig, ax = plt.subplots(figsize=(6, 4))
+                    ax.plot(x, pred_spectra, label="generated")
+                    ax.plot(x, target_spectra, label="target")
+                    ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
+                    ax.set_xlabel("Wave number k [h/Mpc]")
+                    ax.set_ylabel("P(k)")
+                    batch_figs.append(fig)
+                    plt.close(fig)
+                eval_spectrum_figs.extend(batch_figs)
             # Remove large tensors before averaging
             m = {
                 **{k: v for k, v in metrics.items() if k != "sample_fake"},  # pyright: ignore[reportAny]
@@ -592,6 +589,11 @@ def train(
 
         if use_wandb:
             wandb.log({f"val/{k}": v for k, v in eval_avg.items()}, step=global_step)
+            if eval_spectrum_figs:
+                wandb.log(
+                    {"val/power_spectra": [wandb.Image(f) for f in eval_spectrum_figs]},
+                    step=global_step,
+                )
             # Log a small image panel from the first eval batch
             if first_fake is not None and first_batch is not None:
                 imgs = _wandb_images(
