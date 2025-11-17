@@ -47,7 +47,9 @@ def _velocity_loss(
     x1 = batch["targets"]
     cosmos = batch["params"]
 
-    def conditioned_b(x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray) -> jnp.ndarray:
+    def conditioned_b(
+        x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray
+    ) -> jnp.ndarray:
         return model(x, cosmos_vec, t)
 
     return batch_loss_b(conditioned_b, x0, x1, t_batch, cosmos, interpolant, key)
@@ -64,7 +66,9 @@ def _score_loss(
     x1 = batch["targets"]
     cosmos = batch["params"]
 
-    def conditioned_s(x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray) -> jnp.ndarray:
+    def conditioned_s(
+        x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray
+    ) -> jnp.ndarray:
         return model(x, cosmos_vec, t)
 
     return batch_loss_s(conditioned_s, x0, x1, t_batch, cosmos, interpolant, key)
@@ -110,7 +114,9 @@ def _score_step(
     }
 
 
-def _power_spectrum_values(final_img: jnp.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
+def _power_spectrum_values(
+    final_img: jnp.ndarray, bins: int
+) -> tuple[np.ndarray, np.ndarray]:
     mesh = final_img
     if mesh.ndim == 3 and mesh.shape[-1] == 1:
         mesh = mesh[..., 0]
@@ -308,8 +314,12 @@ def train(
             global_step += 1
 
             if step % log_every == 0 or step == train_steps_per_epoch:
-                vel_log = {f"train/{k}": v for k, v in _to_float_dict(vel_metrics).items()}
-                score_log = {f"train/{k}": v for k, v in _to_float_dict(score_metrics).items()}
+                vel_log = {
+                    f"train/{k}": v for k, v in _to_float_dict(vel_metrics).items()
+                }
+                score_log = {
+                    f"train/{k}": v for k, v in _to_float_dict(score_metrics).items()
+                }
                 log = {"epoch": epoch, "step": global_step} | vel_log | score_log
                 last_vel_log = vel_log
                 last_score_log = score_log
@@ -381,7 +391,10 @@ def train(
                 if spectrum is not None:
                     last_spectrum = spectrum
                 eval_metrics_accum = (
-                    {k: eval_metrics_accum.get(k, 0.0) + float(v) for k, v in metrics.items()}
+                    {
+                        k: eval_metrics_accum.get(k, 0.0) + float(v)
+                        for k, v in metrics.items()
+                    }
                     if eval_metrics_accum
                     else {k: float(v) for k, v in metrics.items()}
                 )
@@ -392,8 +405,14 @@ def train(
                 )
             eval_bar.close()
 
-            if eval_count > 0 and final_preds is not None and last_eval_batch is not None:
-                avg_eval_metrics = {k: v / eval_count for k, v in eval_metrics_accum.items()}
+            if (
+                eval_count > 0
+                and final_preds is not None
+                and last_eval_batch is not None
+            ):
+                avg_eval_metrics = {
+                    k: v / eval_count for k, v in eval_metrics_accum.items()
+                }
                 eval_log = {f"eval/{k}": v for k, v in avg_eval_metrics.items()}
                 print(
                     f"[Epoch {epoch:03d} Eval] "
@@ -533,7 +552,9 @@ def main(parser: argparse.ArgumentParser):
     )
 
     if args.velocity_checkpoint_path:
-        print(f"----- Loading Velocity Model from {args.velocity_checkpoint_path} -----")
+        print(
+            f"----- Loading Velocity Model from {args.velocity_checkpoint_path} -----"
+        )
         restore_checkpoint(args.velocity_checkpoint_path, vel_model, vel_opt)
 
     if args.score_checkpoint_path:
@@ -547,7 +568,9 @@ def main(parser: argparse.ArgumentParser):
         t_schedule="linear",
         gamma_type=args.gamma_type,
     )
-    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(gamma_type=args.gamma_type, a=args.gamma_a)
+    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(
+        gamma_type=args.gamma_type, a=args.gamma_a
+    )
     interpolant.gamma = gamma_fn
     interpolant.gamma_dot = gamma_dot_fn
     interpolant.gg_dot = gg_dot_fn
@@ -609,7 +632,7 @@ if __name__ == "__main__":
     parser.add_argument("--integrator-steps", type=int, default=1000)
     parser.add_argument("--n-save", type=int, default=4)
     parser.add_argument("--n-likelihood", type=int, default=1)
-    parser.add_argument("--eval-batches", type=int, default=32)
+    parser.add_argument("--eval-batches", type=int, default=4)
     parser.add_argument("--power-spectrum-bins", type=int, default=64)
     parser.add_argument("--time-embed-dim", type=int, default=256)
     parser.add_argument("--velocity-checkpoint-path", type=str, default=None)
