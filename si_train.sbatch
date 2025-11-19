@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=gan_test_adinesh
-#SBATCH --time=24:00:00
+#SBATCH --job-name=si_test_adinesh
+#SBATCH --time=01:00:00
 #SBATCH --environment=/users/adinesh/DRACO/GAN.toml
 #SBATCH --account=sk030
 #SBATCH -G 1
