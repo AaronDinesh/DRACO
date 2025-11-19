@@ -399,8 +399,9 @@ def train(
                     for i, item in enumerate(all_spectra):
                         x, pred_spectra, target_spectra = item
                         fig, ax = plt.subplots(figsize=(6, 4))
-                        ax.plot(x, pred_spectra, label="generated")
-                        ax.plot(x, target_spectra, label="target")
+                        ax.loglog(x, pred_spectra, label="generated")
+                        ax.loglog(x, target_spectra, label="target")
+                        ax.legend()
                         ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
                         ax.set_xlabel("Wave number k [h/Mpc]")
                         ax.set_ylabel("P(k)")

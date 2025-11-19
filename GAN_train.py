@@ -84,7 +84,7 @@ def make_train_test_loaders(
 
     def _add_noise_channel(x: jnp.ndarray, key: Array | None):
         # x is (N,h,W,C); we return (N,H,W,C+1)
-        sigma = 0.1
+        sigma = 0.5
 
         noise = sigma * jax.random.normal(key, shape=x.shape[:-1] + (1,), dtype=x.dtype)
         return jnp.concatenate((x, noise), axis=-1)
@@ -511,8 +511,8 @@ def train(
         eval_sums = {}
         first_fake = None
         first_batch = None
-        last_spectrum: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-        eval_spectrum_figs: list[Any] = []
+        first_spectrum: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        first_batch_spectrum: list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
 
         for batch in tqdm(
             test_loader(key=test_key, drop_last=True),
@@ -526,25 +526,19 @@ def train(
                 first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
                 first_batch = batch
             fake_images = metrics["sample_fake"]  # pyright: ignore[reportAny]
+
             recon_metrics = batch_metrics(fake_images, batch["targets"])
             power_mse, spectrum, batch_spectra = _power_spectrum_metrics(
-                fake_images, batch["targets"], int(args.power_spectrum_bins)
+                fake_images,
+                batch["targets"],
+                int(args.power_spectrum_bins),
             )
-            if spectrum is not None:
-                last_spectrum = spectrum
-            if use_wandb and batch_spectra:
-                batch_figs: list[Any] = []
-                for i, item in enumerate(batch_spectra):
-                    x, pred_spectra, target_spectra = item
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    ax.plot(x, pred_spectra, label="generated")
-                    ax.plot(x, target_spectra, label="target")
-                    ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
-                    ax.set_xlabel("Wave number k [h/Mpc]")
-                    ax.set_ylabel("P(k)")
-                    batch_figs.append(fig)
-                    plt.close(fig)
-                eval_spectrum_figs.extend(batch_figs)
+            if first_spectrum is None:
+                first_spectrum = spectrum
+
+            if first_batch_spectrum is None:
+                first_batch_spectrum = batch_spectra
+
             # Remove large tensors before averaging
             m = {
                 **{k: v for k, v in metrics.items() if k != "sample_fake"},  # pyright: ignore[reportAny]
@@ -589,28 +583,46 @@ def train(
 
         if use_wandb:
             wandb.log({f"val/{k}": v for k, v in eval_avg.items()}, step=global_step)
-            if eval_spectrum_figs:
-                wandb.log(
-                    {"val/power_spectra": [wandb.Image(f) for f in eval_spectrum_figs]},
-                    step=global_step,
-                )
+
             # Log a small image panel from the first eval batch
-            if first_fake is not None and first_batch is not None:
+            if (
+                first_fake is not None
+                and first_batch is not None
+                and first_batch_spectrum is not None
+            ):
                 imgs = _wandb_images(
                     wandb, first_batch, first_fake, transform_name=args.transform_name
                 )  # pyright: ignore[reportUnknownVariableType, reportAny]
                 wandb.log({"val/examples": imgs}, step=global_step)
-            if last_spectrum is not None:
-                k_vals, pk_pred, pk_target = last_spectrum
-                data_rows = [
-                    [float(k), float(pred), float(tgt)]
-                    for k, pred, tgt in zip(k_vals, pk_pred, pk_target)
-                ]
-                ps_table = wandb.Table(
-                    data=data_rows,
-                    columns=["k", "P_pred(k)", "P_target(k)"],
+
+                batch_figs: list[Any] = []
+                for i, item in tqdm(enumerate(first_batch_spectrum), desc="Building Graphs..."):
+                    x, pred_spectra, target_spectra = item
+                    fig, ax = plt.subplots(figsize=(6, 4))
+                    ax.loglog(x, pred_spectra, label="generated")
+                    ax.loglog(x, target_spectra, label="target")
+                    ax.set_title(f"Power Spectrum of Img {i} at Epoch {epoch}")
+                    ax.set_xlabel("Wave number k [h/Mpc]")
+                    ax.set_ylabel("P(k)")
+                    ax.legend()
+                    batch_figs.append(fig)
+                    plt.close(fig)
+
+                wandb.log(
+                    {"val/power_spectra": [wandb.Image(f) for f in batch_figs]}, step=global_step
                 )
-                wandb.log({"val/power_spectrum": ps_table}, step=global_step)
+
+            # if last_spectrum is not None:
+            #     k_vals, pk_pred, pk_target = last_spectrum
+            #     data_rows = [
+            #         [float(k), float(pred), float(tgt)]
+            #         for k, pred, tgt in zip(k_vals, pk_pred, pk_target)
+            #     ]
+            #     ps_table = wandb.Table(
+            #         data=data_rows,
+            #         columns=["k", "P_pred(k)", "P_target(k)"],
+            #     )
+            #     wandb.log({"val/power_spectrum": ps_table}, step=global_step)
 
     if use_wandb:
         wandb.finish()
