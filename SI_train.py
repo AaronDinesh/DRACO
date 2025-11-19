@@ -315,8 +315,6 @@ def train(
             eval_count = 0
             final_preds = None
             last_eval_batch: Batch | None = None
-            last_spectrum: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-            eval_spectrum_figs: list[Any] = []
             eval_bar = tqdm(
                 range(eval_batches),
                 total=eval_batches,
@@ -343,33 +341,12 @@ def train(
                 )
                 final_preds = preds
                 last_eval_batch = batch
-                ps_mse, spectrum, all_spectra = _power_spectrum_metrics(
-                    preds, batch["targets"], args.power_spectrum_bins
-                )
                 metrics = dict(metrics)
-                metrics["power_spectrum_mse"] = ps_mse
-                if spectrum is not None:
-                    last_spectrum = spectrum
                 eval_metrics_accum = (
                     {k: eval_metrics_accum.get(k, 0.0) + float(v) for k, v in metrics.items()}
                     if eval_metrics_accum
                     else {k: float(v) for k, v in metrics.items()}
                 )
-
-                if use_wandb and all_spectra:
-                    batch_figs: list[Any] = []
-                    for i, item in enumerate(all_spectra):
-                        x, pred_spectra, target_spectra = item
-                        fig, ax = plt.subplots(figsize=(6, 4))
-                        ax.loglog(x, pred_spectra, label="generated")
-                        ax.loglog(x, target_spectra, label="target")
-                        ax.legend()
-                        ax.set_title(f"Power Spectrum of Eval {i} at Epoch {epoch}")
-                        ax.set_xlabel("Wave number k [h/Mpc]")
-                        ax.set_ylabel("P(k)")
-                        batch_figs.append(fig)
-                        plt.close(fig)
-                    eval_spectrum_figs.extend(batch_figs)
 
                 eval_count += 1
                 eval_bar.set_postfix(
@@ -389,12 +366,6 @@ def train(
                 if use_wandb:
                     wandb.log(eval_log, step=global_step)
 
-                    if eval_spectrum_figs:
-                        wandb.log(
-                            {"eval/power_spectra": [wandb.Image(f) for f in eval_spectrum_figs]},
-                            step=global_step,
-                        )
-
                     panel = wandb_image_panel(
                         wandb,
                         inputs=last_eval_batch["inputs"],
@@ -403,47 +374,6 @@ def train(
                         max_items=final_preds.shape[0],
                     )
                     wandb.log({"eval/images": panel}, step=global_step)
-
-                    # final_img = final_preds[0]
-                    # final_target = last_eval_batch["targets"][0]
-                    # if last_spectrum is not None:
-                    #     k_vals, pk_pred, pk_target = last_spectrum
-                    #     data_rows = [
-                    #         [float(k), float(pred), float(tgt)]
-                    #         for k, pred, tgt in zip(k_vals, pk_pred, pk_target)
-                    #     ]
-                    #     ps_table = wandb.Table(
-                    #         data=data_rows,
-                    #         columns=["k", "P_pred(k)", "P_target(k)"],
-                    #     )
-                    #     wandb.log(
-                    #         {
-                    #             "eval/final_image": wandb.Image(
-                    #                 np.asarray(final_img[..., 0]),
-                    #                 caption=f"Epoch {epoch:03d} rollout",
-                    #             ),
-                    #             "eval/final_target": wandb.Image(
-                    #                 np.asarray(final_target[..., 0]),
-                    #                 caption=f"Epoch {epoch:03d} target",
-                    #             ),
-                    #             # "eval/power_spectrum": ps_table,
-                    #         },
-                    #         step=global_step,
-                    #     )
-                    # else:
-                    #     wandb.log(
-                    #         {
-                    #             "eval/final_image": wandb.Image(
-                    #                 np.asarray(final_img[..., 0]),
-                    #                 caption=f"Epoch {epoch:03d} rollout",
-                    #             ),
-                    #             "eval/final_target": wandb.Image(
-                    #                 np.asarray(final_target[..., 0]),
-                    #                 caption=f"Epoch {epoch:03d} target",
-                    #             ),
-                    #         },
-                    #         step=global_step,
-                    #     )
 
     save_checkpoint(
         args.checkpoint_dir,
@@ -602,7 +532,6 @@ if __name__ == "__main__":
     parser.add_argument("--n-save", type=int, default=1)
     parser.add_argument("--n-likelihood", type=int, default=1)
     parser.add_argument("--eval-batches", type=int, default=4)
-    parser.add_argument("--power-spectrum-bins", type=int, default=64)
     parser.add_argument("--time-embed-dim", type=int, default=256)
     parser.add_argument("--velocity-checkpoint-path", type=str, default=None)
     parser.add_argument("--score-checkpoint-path", type=str, default=None)
