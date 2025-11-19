@@ -438,7 +438,7 @@ def train(
                         inputs=last_eval_batch["inputs"],
                         targets=last_eval_batch["targets"],
                         preds=final_preds,
-                        max_items=min(3, final_preds.shape[0]),
+                        max_items=final_preds.shape[0],
                     )
                     wandb.log({"eval/images": panel}, step=global_step)
 

@@ -591,7 +591,7 @@ def train(
                 and first_batch_spectrum is not None
             ):
                 imgs = _wandb_images(
-                    wandb, first_batch, first_fake, transform_name=args.transform_name
+                    wandb, first_batch, first_fake, transform_name=args.transform_name, max_items=first_batch.shape[0]
                 )  # pyright: ignore[reportUnknownVariableType, reportAny]
                 wandb.log({"val/examples": imgs}, step=global_step)
 
