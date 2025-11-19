@@ -1,13 +1,13 @@
 import argparse
 import collections.abc
 import math
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import jax.random as random
-import matplotlib.pyplot as plt
 import numpy as np
 import optax
 import pandas as pd
@@ -24,10 +24,47 @@ from src.utils import (
     batch_metrics,
     delete_checkpoint,
     make_transform,
-    power_spectrum,
     restore_checkpoint,
     save_checkpoint,
 )
+
+
+@jax.jit
+def _append_noise_channel(inputs: jnp.ndarray, key: Array) -> jnp.ndarray:
+    sigma = 0.5
+    noise = sigma * random.normal(key, shape=inputs.shape[:-1] + (1,), dtype=inputs.dtype)
+    return jnp.concatenate((inputs, noise), axis=-1)
+
+
+def _maybe_add_noise(inputs: jnp.ndarray, add_noise: bool, key: Array | None) -> jnp.ndarray:
+    if not add_noise:
+        return inputs
+    if key is None:
+        raise ValueError("Noise-enabled training requires a PRNG key")
+    return _append_noise_channel(inputs, key)
+
+
+def _prefetch_to_device(
+    iterator: collections.abc.Iterator[Batch], prefetch_size: int
+) -> collections.abc.Iterator[Batch]:
+    if prefetch_size <= 0:
+        yield from iterator
+        return
+
+    queue: deque[Batch] = deque()
+    try:
+        for _ in range(prefetch_size):
+            queue.append(jax.device_put(next(iterator)))
+    except StopIteration:
+        pass
+
+    while queue:
+        batch = queue.popleft()
+        yield batch
+        try:
+            queue.append(jax.device_put(next(iterator)))
+        except StopIteration:
+            continue
 
 
 def make_train_test_loaders(
@@ -38,62 +75,49 @@ def make_train_test_loaders(
     csv_path: str,
     test_ratio: float = 0.2,
     transform_name: TransformName = "signed_log1p",
-    add_noise: bool = False,
 ):
-    input_maps = np.load(input_data_path, mmap_mode="r")
-    output_maps = np.load(output_data_path, mmap_mode="r")
-    cosmos_params = pd.read_csv(csv_path, header=None, sep=" ")
+    input_maps_np = np.load(input_data_path, mmap_mode="r")
+    output_maps_np = np.load(output_data_path, mmap_mode="r")
+    cosmos_params_df = pd.read_csv(csv_path, header=None, sep=" ")
 
-    repeat_factor: int = input_maps.shape[0] // len(cosmos_params)
-    # fmt: off
-    cosmos_params = cosmos_params.loc[cosmos_params.index.repeat(repeat_factor)].reset_index(drop=True)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    # fmt: on
-    cosmos_params = jnp.asarray(cosmos_params.to_numpy())  # pyright: ignore[reportUnknownMemberType]
+    repeat_factor: int = input_maps_np.shape[0] // len(cosmos_params_df)
+    cosmos_params_df = cosmos_params_df.loc[
+        cosmos_params_df.index.repeat(repeat_factor)
+    ].reset_index(drop=True)
+    cosmos_params = jnp.asarray(cosmos_params_df.to_numpy(), dtype=jnp.float32)
 
-    assert len(input_maps) == len(cosmos_params), (
-        f"The length of the input maps {input_maps.shape} do not match the number of cosmos params entries {cosmos_params.shape}"
+    assert len(input_maps_np) == len(cosmos_params), (
+        f"The length of the input maps {input_maps_np.shape} do not match the number of cosmos params entries {cosmos_params.shape}"
     )
-    assert len(input_maps) == len(output_maps), (
+    assert len(input_maps_np) == len(output_maps_np), (
         "The number of input maps does not match the number of output maps"
     )
 
-    dataset_len = len(input_maps)
+    def _add_channel_last(x: np.ndarray):
+        return x[..., None] if x.ndim == 3 else x
 
+    forward_transform, _ = make_transform(name=transform_name)
+    input_maps = forward_transform(jnp.asarray(_add_channel_last(np.asarray(input_maps_np))))
+    output_maps = forward_transform(jnp.asarray(_add_channel_last(np.asarray(output_maps_np))))
+    input_maps = input_maps.astype(jnp.float32)
+    output_maps = output_maps.astype(jnp.float32)
+
+    dataset_len = input_maps.shape[0]
     n_test = max(1, int(round(test_ratio * dataset_len)))
 
     random_shuffle = jax.random.permutation(key=key, x=dataset_len)
-
     test_idx = random_shuffle[:n_test]
     train_idx = random_shuffle[n_test:]
 
-    # after train_idx/test_idx are defined
     mu = jnp.mean(cosmos_params[train_idx], axis=0)
     sigma = jnp.std(cosmos_params[train_idx], axis=0) + 1e-6
+    standardized_params = ((cosmos_params - mu) / sigma).astype(jnp.float32)
 
-    forward_transform, _ = make_transform(name=transform_name)
-
-    # This ensures that there is no data leakage
     assert len(jnp.intersect1d(train_idx, test_idx)) == 0
-
-    def _standardize_params(x: jnp.ndarray, mu: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
-        return (x - mu) / sigma
-
-    def _add_channel_last(x: jnp.ndarray):
-        # x is (N,H,W) or (N,H,W,C); return (N,H,W,1) or (N,H,W,C)
-        return x[..., None] if x.ndim == 3 else x
-
-    def _add_noise_channel(x: jnp.ndarray, key: Array | None):
-        # x is (N,h,W,C); we return (N,H,W,C+1)
-        sigma = 0.5
-
-        noise = sigma * jax.random.normal(key, shape=x.shape[:-1] + (1,), dtype=x.dtype)
-        return jnp.concatenate((x, noise), axis=-1)
 
     def _run_epoch(
         shuffled_idx: jnp.ndarray, key: Array | None, drop_last: bool = False
     ) -> collections.abc.Generator[Batch]:
-        # Use separate keys for shuffling and per-batch noise so we
-        # get different noise realizations across batches and epochs.
         if key is not None:
             key, perm_key = random.split(key)
             shuffled_idx = random.permutation(perm_key, shuffled_idx)
@@ -103,21 +127,10 @@ def make_train_test_loaders(
 
         for s in range(0, stop, batch_size):
             batch = shuffled_idx[s : s + batch_size]
-
-            batch_inputs = forward_transform(_add_channel_last(input_maps[batch]))
-            if add_noise:
-                if key is None:
-                    raise ValueError("add_noise=True requires a PRNG key")
-                key, noise_key = random.split(key)
-                batch_inputs = _add_noise_channel(batch_inputs, noise_key)
-
-            targets = forward_transform(_add_channel_last(output_maps[batch]))
-            params = _standardize_params(cosmos_params[batch], mu=mu, sigma=sigma)
-
             yield {
-                "inputs": batch_inputs,
-                "targets": targets,
-                "params": params,
+                "inputs": input_maps[batch],
+                "targets": output_maps[batch],
+                "params": standardized_params[batch],
             }
 
     def train_loader(key: Array | None = None, drop_last: bool = False):
@@ -131,8 +144,8 @@ def make_train_test_loaders(
         test_loader,
         len(train_idx),
         len(test_idx),
-        input_maps[0].shape[1],
-        cosmos_params[0].shape[0],
+        input_maps.shape[1],
+        cosmos_params.shape[1],
         mu,
         sigma,
     )
@@ -341,41 +354,6 @@ def _wandb_images(
     return imgs
 
 
-def _power_spectrum_values(final_img: jnp.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
-    mesh = final_img
-    if mesh.ndim == 3 and mesh.shape[-1] == 1:
-        mesh = mesh[..., 0]
-    k_vals, pk = power_spectrum(mesh, kedges=bins)
-    return np.asarray(jax.device_get(k_vals)), np.asarray(jax.device_get(pk))
-
-
-def _power_spectrum_metrics(
-    preds: jnp.ndarray, targets: jnp.ndarray, bins: int
-) -> tuple[
-    float,
-    tuple[np.ndarray, np.ndarray, np.ndarray],
-    list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None,
-]:
-    batch_mses: list[float] = []
-    spectra = []
-    representative: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-
-    for pred, target in zip(preds, targets):
-        k_pred, pk_pred = _power_spectrum_values(pred, bins)
-        _, pk_target = _power_spectrum_values(target, bins)
-        min_len = min(len(pk_pred), len(pk_target))
-        spectra.append((k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len]))
-        if min_len == 0:
-            continue
-        diff = pk_pred[:min_len] - pk_target[:min_len]
-        batch_mses.append(float(np.mean(np.square(diff))))
-        if representative is None:
-            representative = (k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len])
-
-    mse = float(np.mean(batch_mses)) if batch_mses else 0.0
-    return mse, representative, spectra
-
-
 def train(
     num_epochs: int,
     batch_size: int,
@@ -433,7 +411,6 @@ def train(
                 eval_steps=eval_steps_per_epoch,
                 cosmos_params_mu=cosmos_params_mu,
                 cosmos_params_sigma=cosmos_params_sigma,
-                power_spectrum_bins=int(args.power_spectrum_bins),
             ),
         )
 
@@ -452,13 +429,25 @@ def train(
         train_key = random.fold_in(train_key, epoch)
         test_key = random.fold_in(test_key, epoch)
 
-        for batch in tqdm(  # pyright: ignore[reportUnknownVariableType]
-            train_loader(key=train_key, drop_last=True),  # pyright: ignore[reportUnknownArgumentType, reportCallIssue]
+        train_key, loader_key = random.split(train_key)
+        train_iterator = _prefetch_to_device(
+            train_loader(key=loader_key, drop_last=True),
+            int(args.prefetch_size),
+        )
+
+        for batch in tqdm(
+            train_iterator,
             total=train_steps_per_epoch,
             leave=False,
             position=1,
             desc=f"Epoch: {epoch:03d} - Training Batch",
         ):
+            noise_key = None
+            if args.add_noise:
+                train_key, noise_key = random.split(train_key)
+            prepared_inputs = _maybe_add_noise(batch["inputs"], args.add_noise, noise_key)
+            batch = {**batch, "inputs": prepared_inputs}
+
             d_metrics = disc_step(discriminator, opt_disc, generator, batch)  # pyright: ignore[reportUnknownArgumentType, reportAny]
 
             if (step % args.n_critic) == 0:
@@ -511,16 +500,25 @@ def train(
         eval_sums = {}
         first_fake = None
         first_batch = None
-        first_spectrum: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-        first_batch_spectrum: list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
+
+        test_key, eval_loader_key = random.split(test_key)
+        eval_iterator = _prefetch_to_device(
+            test_loader(key=eval_loader_key, drop_last=True),
+            int(args.prefetch_size),
+        )
 
         for batch in tqdm(
-            test_loader(key=test_key, drop_last=True),
+            eval_iterator,
             total=eval_steps_per_epoch,
             leave=False,
             position=1,
             desc=f"Epoch {epoch:03d} - Running Eval Batch",
         ):
+            eval_noise_key = None
+            if args.add_noise:
+                test_key, eval_noise_key = random.split(test_key)
+            prepared_inputs = _maybe_add_noise(batch["inputs"], args.add_noise, eval_noise_key)
+            batch = {**batch, "inputs": prepared_inputs}
             metrics = eval_step(discriminator, generator, batch, l1_lambda=float(args.l1_lambda))  # pyright: ignore[reportAny, reportUnknownArgumentType]
             if first_fake is None:
                 first_fake = metrics["sample_fake"]  # pyright: ignore[reportAny]
@@ -528,22 +526,10 @@ def train(
             fake_images = metrics["sample_fake"]  # pyright: ignore[reportAny]
 
             recon_metrics = batch_metrics(fake_images, batch["targets"])
-            power_mse, spectrum, batch_spectra = _power_spectrum_metrics(
-                fake_images,
-                batch["targets"],
-                int(args.power_spectrum_bins),
-            )
-            if first_spectrum is None:
-                first_spectrum = spectrum
-
-            if first_batch_spectrum is None:
-                first_batch_spectrum = batch_spectra
-
             # Remove large tensors before averaging
             m = {
                 **{k: v for k, v in metrics.items() if k != "sample_fake"},  # pyright: ignore[reportAny]
                 **recon_metrics,
-                "power_spectrum_mse": jnp.asarray(power_mse),
             }
             for k, v in m.items():  # pyright: ignore[reportAny]
                 eval_sums[k] = eval_sums.get(k, 0.0) + float(jax.device_get(v))  # pyright: ignore[reportUnknownMemberType, reportAny]
@@ -585,44 +571,14 @@ def train(
             wandb.log({f"val/{k}": v for k, v in eval_avg.items()}, step=global_step)
 
             # Log a small image panel from the first eval batch
-            if (
-                first_fake is not None
-                and first_batch is not None
-                and first_batch_spectrum is not None
-            ):
+            if first_fake is not None and first_batch is not None:
                 imgs = _wandb_images(
-                    wandb, first_batch, first_fake, transform_name=args.transform_name, max_items=first_batch.shape[0]
+                    wandb,
+                    first_batch,
+                    first_fake,
+                    transform_name=args.transform_name,
                 )  # pyright: ignore[reportUnknownVariableType, reportAny]
                 wandb.log({"val/examples": imgs}, step=global_step)
-
-                batch_figs: list[Any] = []
-                for i, item in tqdm(enumerate(first_batch_spectrum), desc="Building Graphs..."):
-                    x, pred_spectra, target_spectra = item
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    ax.loglog(x, pred_spectra, label="generated")
-                    ax.loglog(x, target_spectra, label="target")
-                    ax.set_title(f"Power Spectrum of Img {i} at Epoch {epoch}")
-                    ax.set_xlabel("Wave number k [h/Mpc]")
-                    ax.set_ylabel("P(k)")
-                    ax.legend()
-                    batch_figs.append(fig)
-                    plt.close(fig)
-
-                wandb.log(
-                    {"val/power_spectra": [wandb.Image(f) for f in batch_figs]}, step=global_step
-                )
-
-            # if last_spectrum is not None:
-            #     k_vals, pk_pred, pk_target = last_spectrum
-            #     data_rows = [
-            #         [float(k), float(pred), float(tgt)]
-            #         for k, pred, tgt in zip(k_vals, pk_pred, pk_target)
-            #     ]
-            #     ps_table = wandb.Table(
-            #         data=data_rows,
-            #         columns=["k", "P_pred(k)", "P_target(k)"],
-            #     )
-            #     wandb.log({"val/power_spectrum": ps_table}, step=global_step)
 
     if use_wandb:
         wandb.finish()
@@ -674,7 +630,6 @@ def main(parser: argparse.ArgumentParser):
         output_data_path=args.output_maps,  # pyright: ignore[reportAny]
         csv_path=args.cosmos_params,  # pyright: ignore[reportAny]
         transform_name=args.transform_name,  # pyright: ignore[reportAny]
-        add_noise=args.add_noise,  # pyright: ignore[reportAny]
     )
 
     print("----- Creating Generator -----")
@@ -763,6 +718,7 @@ if __name__ == "__main__":
     parser.add_argument("--transform-name", default="log10")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--epochs", default=150)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--log-rate", default=5)  # pyright: ignore[reportUnusedCallResult]
+    parser.add_argument("--prefetch-size", type=int, default=2)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--input-maps")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--output-maps")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--cosmos-params")  # pyright: ignore[reportUnusedCallResult]
@@ -773,6 +729,5 @@ if __name__ == "__main__":
     parser.add_argument("--wandb-run-name", default="nnx-cgan-256-run-4")  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--generator-checkpoint-path", default=None)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--discriminator-checkpoint-path", default=None)  # pyright: ignore[reportUnusedCallResult]
-    parser.add_argument("--power-spectrum-bins", type=int, default=64)  # pyright: ignore[reportUnusedCallResult]
     parser.add_argument("--add-noise", action="store_true", default=False)  # pyright: ignore[reportUnusedCallResult]
     main(parser)

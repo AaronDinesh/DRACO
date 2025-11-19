@@ -12,6 +12,7 @@ import numpy as np
 import optax
 from dotenv import load_dotenv
 from flax import nnx
+from jax._src.typing import Array
 from tqdm import tqdm
 
 from GAN_train import make_train_test_loaders
@@ -115,9 +116,7 @@ def _power_spectrum_metrics(
     return mse, spectra
 
 
-def _plot_power_spectrum(
-    data: tuple[np.ndarray, np.ndarray, np.ndarray], sample_idx: int
-):
+def _plot_power_spectrum(data: tuple[np.ndarray, np.ndarray, np.ndarray], sample_idx: int):
     k_vals, pred_spectra, target_spectra = data
     if len(k_vals) == 0:
         return None
@@ -168,7 +167,6 @@ def evaluate(args: argparse.Namespace) -> None:
         csv_path=args.cosmos_params,
         test_ratio=args.test_ratio,
         transform_name=args.transform_name,
-        add_noise=args.add_noise,
     )
 
     in_channels = args.img_channels + (1 if args.add_noise else 0)
@@ -207,8 +205,14 @@ def evaluate(args: argparse.Namespace) -> None:
     sample_idx = 0
 
     total_steps = max(1, math.ceil(n_test / args.batch_size))
-    eval_iter: Iterable[Batch] = test_loader(key=test_key, drop_last=False)
+    test_key, loader_key = random.split(test_key)
+    eval_iter: Iterable[Batch] = test_loader(key=loader_key, drop_last=False)
     for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating GAN", unit="batch"):
+        noise_key = None
+        if args.add_noise:
+            test_key, noise_key = random.split(test_key)
+        prepared_inputs = _maybe_add_noise(batch["inputs"], args.add_noise, noise_key)
+        batch = {**batch, "inputs": prepared_inputs}
         metrics = gan_eval_step(discriminator, generator, batch, l1_lambda=args.l1_lambda)
         fake_images = metrics.pop("sample_fake")
         recon_metrics = batch_metrics(fake_images, batch["targets"])
@@ -277,3 +281,18 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     evaluate(parse_args())
+
+
+@jax.jit
+def _append_noise_channel(inputs: jnp.ndarray, key: Array) -> jnp.ndarray:
+    sigma = 0.5
+    noise = sigma * random.normal(key, shape=inputs.shape[:-1] + (1,), dtype=inputs.dtype)
+    return jnp.concatenate((inputs, noise), axis=-1)
+
+
+def _maybe_add_noise(inputs: jnp.ndarray, add_noise: bool, key: Array | None) -> jnp.ndarray:
+    if not add_noise:
+        return inputs
+    if key is None:
+        raise ValueError("Noise-enabled evaluation requires a PRNG key")
+    return _append_noise_channel(inputs, key)
