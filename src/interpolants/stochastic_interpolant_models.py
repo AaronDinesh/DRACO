@@ -83,7 +83,7 @@ class DownsampleBlock(nnx.Module):
             out_features=out_features,
             kernel_size=size,
             strides=2,
-            padding="SAME",
+            padding="CIRCULAR",
             use_bias=not apply_groupnorm,
             rngs=nnx.Rngs(conv_key),
         )
@@ -116,7 +116,7 @@ class UpsampleBlock(nnx.Module):
             out_features=out_features,
             kernel_size=kernel_size,
             strides=1,
-            padding="SAME",
+            padding="CIRCULAR",
             rngs=nnx.Rngs(conv_key),
         )
         self.group_norm: nnx.GroupNorm = nnx.GroupNorm(
@@ -236,7 +236,7 @@ class StochasticInterpolantUNet(nnx.Module):
             in_features=upsample_layout[-1][1],
             out_features=out_features,
             kernel_size=(3, 3),
-            padding="SAME",
+            padding="CIRCULAR",
             rngs=nnx.Rngs(next_key()),
         )
 

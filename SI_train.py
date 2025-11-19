@@ -1,12 +1,10 @@
 import argparse
 import math
-from typing import Any, Iterator
+from typing import Iterator
 
 import jax
 import jax.numpy as jnp
 import jax.random as random
-import matplotlib.pyplot as plt
-import numpy as np
 import optax
 from dotenv import load_dotenv
 from flax import nnx
@@ -26,7 +24,6 @@ from src.typing import Batch, Loader, TransformName
 from src.utils import (
     batch_metrics,
     make_train_test_loaders,
-    power_spectrum,
     restore_checkpoint,
     save_checkpoint,
     wandb_image_panel,
@@ -109,41 +106,6 @@ def _score_step(
         "s_loss": loss,
         "s_t_mean": jnp.mean(t_batch),
     }
-
-
-def _power_spectrum_values(final_img: jnp.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
-    mesh = final_img
-    if mesh.ndim == 3 and mesh.shape[-1] == 1:
-        mesh = mesh[..., 0]
-    k_vals, pk = power_spectrum(mesh, kedges=bins)
-    return np.asarray(k_vals), np.asarray(pk)
-
-
-def _power_spectrum_metrics(
-    preds: jnp.ndarray, targets: jnp.ndarray, bins: int
-) -> tuple[
-    float,
-    tuple[np.ndarray, np.ndarray, np.ndarray],
-    list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None,
-]:
-    batch_mses: list[float] = []
-    spectra = []
-    representative: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-
-    for pred, target in zip(preds, targets):
-        k_pred, pk_pred = _power_spectrum_values(pred, bins)
-        _, pk_target = _power_spectrum_values(target, bins)
-        min_len = min(len(pk_pred), len(pk_target))
-        spectra.append((k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len]))
-        if min_len == 0:
-            continue
-        diff = pk_pred[:min_len] - pk_target[:min_len]
-        batch_mses.append(float(np.mean(np.square(diff))))
-        if representative is None:
-            representative = (k_pred[:min_len], pk_pred[:min_len], pk_target[:min_len])
-
-    mse = float(np.mean(batch_mses)) if batch_mses else 0.0
-    return mse, representative, spectra
 
 
 def eval_step(
@@ -631,13 +593,13 @@ if __name__ == "__main__":
     parser.add_argument("--score-lr", type=float, default=2e-4)
     parser.add_argument("--beta1", type=float, default=0.9)
     parser.add_argument("--beta2", type=float, default=0.999)
-    parser.add_argument("--t-min", type=float, default=1e-3)
-    parser.add_argument("--t-max", type=float, default=1.0 - 1e-3)
+    parser.add_argument("--t-min", type=float, default=1e-9)
+    parser.add_argument("--t-max", type=float, default=1.0 - 1e-9)
     parser.add_argument("--gamma-type", type=str, default="brownian")
     parser.add_argument("--gamma-a", type=float, default=1.0)
-    parser.add_argument("--eps", type=float, default=1e-2)
-    parser.add_argument("--integrator-steps", type=int, default=1000)
-    parser.add_argument("--n-save", type=int, default=4)
+    parser.add_argument("--eps", type=float, default=5e-3)
+    parser.add_argument("--integrator-steps", type=int, default=2000)
+    parser.add_argument("--n-save", type=int, default=1)
     parser.add_argument("--n-likelihood", type=int, default=1)
     parser.add_argument("--eval-batches", type=int, default=4)
     parser.add_argument("--power-spectrum-bins", type=int, default=64)
