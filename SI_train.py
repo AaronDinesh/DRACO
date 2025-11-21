@@ -177,6 +177,10 @@ def train(
 ) -> None:
     train_steps_per_epoch = math.ceil(n_train / batch_size)
     eval_steps_per_epoch = math.ceil(n_test / batch_size)
+    data_stats = {
+        "cosmos_params_mu": cosmos_params_mu,
+        "cosmos_params_sigma": cosmos_params_sigma,
+    }
 
     if use_wandb:
         print("----- Setting up WANDB -----")
@@ -300,12 +304,14 @@ def train(
                 model=vel_model,
                 optimizer=vel_opt,
                 alt_name=f"velocity_epoch_{epoch:03d}",
+                data_stats=data_stats,
             )
             save_checkpoint(
                 args.checkpoint_dir,
                 model=score_model,
                 optimizer=score_opt,
                 alt_name=f"score_epoch_{epoch:03d}",
+                data_stats=data_stats,
             )
 
         if epoch % eval_every == 0:
@@ -380,6 +386,7 @@ def train(
         model=vel_model,
         optimizer=vel_opt,
         alt_name="velocity_final",
+        data_stats=data_stats,
         wait=True,
     )
     save_checkpoint(
@@ -387,6 +394,7 @@ def train(
         model=score_model,
         optimizer=score_opt,
         alt_name="score_final",
+        data_stats=data_stats,
         wait=True,
     )
     print("Training finished.")

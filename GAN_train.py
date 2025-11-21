@@ -382,6 +382,10 @@ def train(
 
     cosmos_params_mu = kwargs["cosmos_params_mu"]
     cosmos_params_sigma = kwargs["cosmos_params_sigma"]
+    data_stats = {
+        "cosmos_params_mu": cosmos_params_mu,
+        "cosmos_params_sigma": cosmos_params_sigma,
+    }
 
     best_disc_acc: float = 0.0
     best_gan_loss: float = jnp.inf
@@ -488,12 +492,14 @@ def train(
                 model=generator,
                 optimizer=opt_gen,
                 alt_name=f"generator_epoch_{epoch:03d}_gloss_{g_metrics['g_loss']:.03f}",
+                data_stats=data_stats,
             )
             save_checkpoint(
                 args.checkpoint_dir,
                 model=discriminator,
                 optimizer=opt_disc,
                 alt_name=f"discriminator_epoch_{epoch:03d}_dacc_{d_metrics['d_acc']:.03f}",
+                data_stats=data_stats,
             )
 
         # Accumulate averages across eval steps
@@ -547,6 +553,7 @@ def train(
                 discriminator,
                 opt_disc,
                 alt_name=f"BEST_DISC_ACC_acc_{best_disc_acc:.04f}",
+                data_stats=data_stats,
             )
 
         if eval_avg["g_loss"] < best_gan_loss:
@@ -560,6 +567,7 @@ def train(
                 generator,
                 opt_gen,
                 alt_name=f"BEST_GAN_LOSS_loss_{best_gan_loss:.04f}",
+                data_stats=data_stats,
             )
 
         print(
@@ -590,6 +598,7 @@ def train(
         generator,
         opt_gen,
         alt_name=f"Final_Generator",
+        data_stats=data_stats,
         wait=True,
     )
 
@@ -600,6 +609,7 @@ def train(
         discriminator,
         opt_disc,
         alt_name=f"Final_Discriminator",
+        data_stats=data_stats,
         wait=True,
     )
 
