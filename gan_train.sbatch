@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=gan_test_adinesh
-#SBATCH --time=00:30:00
+#SBATCH --time=24:00:00
 #SBATCH --environment=/users/adinesh/DRACO/GAN.toml
 #SBATCH --account=sk030
 #SBATCH -G 1
 #SBATCH --output=/users/adinesh/DRACO/logs/test_gan_out_%j.log
 #SBATCH --error=/users/adinesh/DRACO/logs/test_gan_err_%j.log
-#SBATCH --partition=debug
+#SBATCH --partition=normal
 
 RUN_NUMBER=$1
 
