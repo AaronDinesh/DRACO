@@ -53,7 +53,9 @@ def _load_input(
             raise ValueError(
                 f"sample_idx {sample_idx} out of range for target dataset of size {len(target_maps)}"
             )
-        target = np.asarray(_add_channel_last(np.asarray(target_maps[sample_idx])), dtype=np.float32)
+        target = np.asarray(
+            _add_channel_last(np.asarray(target_maps[sample_idx])), dtype=np.float32
+        )
 
     return x0, cosmos, inverse_transform, target
 
@@ -184,6 +186,7 @@ def generate_samples(
 
     # Run stochastic rollouts
     rollout = jax.jit(lambda x, key: integrator.forward_rollout(x, key))
+
     def _pred_iter():
         nonlocal sample_key
         for _ in tqdm(range(args.n_samples), desc="Generating samples", unit="sample"):
@@ -207,7 +210,9 @@ def _to_uint8(arr: np.ndarray) -> np.ndarray:
     return arr_uint8
 
 
-def save_outputs(outputs: Iterable[np.ndarray], output_dir: Path, target: np.ndarray | None = None) -> None:
+def save_outputs(
+    outputs: Iterable[np.ndarray], output_dir: Path, target: np.ndarray | None = None
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     if target is not None:
         target_uint8 = _to_uint8(np.asarray(target))
@@ -230,13 +235,13 @@ def main():
     parser.add_argument("--velocity-checkpoint-path", required=True, help="Velocity model checkpoint")
     parser.add_argument("--score-checkpoint-path", required=True, help="Score model checkpoint")
     parser.add_argument("--output-dir", required=True, help="Directory to write generated samples")
-    parser.add_argument("--n-samples", type=int, default=4, help="Number of stochastic generations")
+    parser.add_argument("--n-samples", type=int, default=15, help="Number of stochastic generations")
     parser.add_argument("--img-channels", type=int, default=1)
     parser.add_argument("--transform-name", default="log10")
     parser.add_argument("--eps", type=float, default=5e-3)
     parser.add_argument("--t-min", type=float, default=1e-9)
     parser.add_argument("--t-max", type=float, default=1.0 - 1e-9)
-    parser.add_argument("--integrator-steps", type=int, default=2000)
+    parser.add_argument("--integrator-steps", type=int, default=3000)
     parser.add_argument("--n-save", type=int, default=1)
     parser.add_argument("--n-likelihood", type=int, default=1)
     parser.add_argument("--gamma-type", type=str, default="brownian")
