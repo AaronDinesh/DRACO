@@ -18,6 +18,7 @@ nvidia-smi
 python si_generate.py \
   --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
   --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
+  --target-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_B_IllustrisTNG_SB28_z=0.00.npy \
   --velocity-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/B/run_${RUN_NUMBER}/velocity_final \
   --score-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/B/run_${RUN_NUMBER}/score_final \
   --output-dir=/capstor/store/cscs/ska/sk030/si_generations/B/run_${RUN_NUMBER}/sample_${SAMPLE_IDX} \

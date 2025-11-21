@@ -26,7 +26,8 @@ def _load_input(
     params_path: str,
     sample_idx: int,
     transform_name: str,
-) -> Tuple[jnp.ndarray, jnp.ndarray, Callable[[jnp.ndarray], jnp.ndarray]]:
+    target_maps_path: str | None = None,
+) -> Tuple[jnp.ndarray, jnp.ndarray, Callable[[jnp.ndarray], jnp.ndarray], np.ndarray | None]:
     input_maps = np.load(input_maps_path, mmap_mode="r")
     cosmos_params = pd.read_csv(params_path, header=None, sep=" ")
     cosmos_params = jnp.asarray(cosmos_params.to_numpy(), dtype=jnp.float32)
@@ -45,7 +46,16 @@ def _load_input(
     )
     cosmos = jnp.asarray((cosmos_params[sample_idx] - cosmos_mu) / cosmos_sigma, dtype=jnp.float32)
 
-    return x0, cosmos, inverse_transform
+    target: np.ndarray | None = None
+    if target_maps_path:
+        target_maps = np.load(target_maps_path, mmap_mode="r")
+        if sample_idx < 0 or sample_idx >= len(target_maps):
+            raise ValueError(
+                f"sample_idx {sample_idx} out of range for target dataset of size {len(target_maps)}"
+            )
+        target = np.asarray(_add_channel_last(np.asarray(target_maps[sample_idx])), dtype=np.float32)
+
+    return x0, cosmos, inverse_transform, target
 
 
 def _build_models(
@@ -124,17 +134,18 @@ def _create_integrator(
 
 def generate_samples(
     args: argparse.Namespace,
-) -> Iterable[np.ndarray]:
+) -> tuple[np.ndarray | None, Iterable[np.ndarray]]:
     _ = load_dotenv()
 
     master_key = random.key(args.seed)
     model_key, sample_key = random.split(master_key)
 
-    x0, cosmos, inverse_transform = _load_input(
+    x0, cosmos, inverse_transform, target = _load_input(
         args.input_maps,
         args.cosmos_params,
         args.sample_idx,
         args.transform_name,
+        target_maps_path=args.target_maps,
     )
     cosmos = cosmos[None, ...]  # add batch axis
     x0 = x0[None, ...]  # add batch axis
@@ -173,26 +184,37 @@ def generate_samples(
 
     # Run stochastic rollouts
     rollout = jax.jit(lambda x, key: integrator.forward_rollout(x, key))
-    for _ in tqdm(range(args.n_samples), desc="Generating samples", unit="sample"):
-        sample_key, sub = random.split(sample_key)
-        preds = rollout(x0, sub)
-        preds = inverse_transform(preds)
-        yield np.asarray(preds[0])
+    def _pred_iter():
+        nonlocal sample_key
+        for _ in tqdm(range(args.n_samples), desc="Generating samples", unit="sample"):
+            sample_key, sub = random.split(sample_key)
+            preds = rollout(x0, sub)
+            preds = inverse_transform(preds)
+            yield np.asarray(preds[0])
+
+    return target, _pred_iter()
 
 
-def save_outputs(outputs: Iterable[np.ndarray], output_dir: Path) -> None:
+def _to_uint8(arr: np.ndarray) -> np.ndarray:
+    lo = np.percentile(arr, 1.0)
+    hi = np.percentile(arr, 99.0)
+    if np.isclose(hi, lo):
+        hi = lo + 1e-6
+    arr = np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
+    arr_uint8 = (arr * 255.0).astype(np.uint8)
+    if arr_uint8.ndim == 3 and arr_uint8.shape[-1] == 1:
+        arr_uint8 = arr_uint8[..., 0]
+    return arr_uint8
+
+
+def save_outputs(outputs: Iterable[np.ndarray], output_dir: Path, target: np.ndarray | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    if target is not None:
+        target_uint8 = _to_uint8(np.asarray(target))
+        Image.fromarray(target_uint8).save(output_dir / "target.png")
+
     for idx, arr in enumerate(outputs):
-        arr_np = np.asarray(arr)
-        # Robust per-sample scaling to [0, 255] for visualization.
-        lo = np.percentile(arr_np, 1.0)
-        hi = np.percentile(arr_np, 99.0)
-        if np.isclose(hi, lo):
-            hi = lo + 1e-6
-        arr_np = np.clip((arr_np - lo) / (hi - lo), 0.0, 1.0)
-        arr_uint8 = (arr_np * 255.0).astype(np.uint8)
-        if arr_uint8.ndim == 3 and arr_uint8.shape[-1] == 1:
-            arr_uint8 = arr_uint8[..., 0]
+        arr_uint8 = _to_uint8(np.asarray(arr))
         img = Image.fromarray(arr_uint8)
         out_path = output_dir / f"sample_{idx:03d}.png"
         img.save(out_path)
@@ -204,10 +226,11 @@ def main():
     parser.add_argument("--input-maps", required=True, help="Path to input .npy array (N,H,W[,C])")
     parser.add_argument("--cosmos-params", required=True, help="Path to cosmos params txt/csv")
     parser.add_argument("--sample-idx", type=int, default=0, help="Index of the input to generate for")
+    parser.add_argument("--target-maps", help="Optional path to target/output .npy array for visualization")
     parser.add_argument("--velocity-checkpoint-path", required=True, help="Velocity model checkpoint")
     parser.add_argument("--score-checkpoint-path", required=True, help="Score model checkpoint")
     parser.add_argument("--output-dir", required=True, help="Directory to write generated samples")
-    parser.add_argument("--n-samples", type=int, default=15, help="Number of stochastic generations")
+    parser.add_argument("--n-samples", type=int, default=4, help="Number of stochastic generations")
     parser.add_argument("--img-channels", type=int, default=1)
     parser.add_argument("--transform-name", default="log10")
     parser.add_argument("--eps", type=float, default=5e-3)
@@ -223,8 +246,8 @@ def main():
     # fmt: on
     args = parser.parse_args()
 
-    outputs = generate_samples(args)
-    save_outputs(outputs, Path(args.output_dir))
+    target, outputs = generate_samples(args)
+    save_outputs(outputs, Path(args.output_dir), target=target)
     print(f"Saved {args.n_samples} samples to {args.output_dir}")
 
 
