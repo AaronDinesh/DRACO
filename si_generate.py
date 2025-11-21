@@ -10,6 +10,7 @@ import optax
 import pandas as pd
 from dotenv import load_dotenv
 from flax import nnx
+from tqdm import tqdm
 
 from src.interpolants import LinearInterpolant, SDEIntegrator, StochasticInterpolantUNet, make_gamma
 from src.utils import make_transform, restore_checkpoint
@@ -166,9 +167,10 @@ def generate_samples(
     )
 
     # Run stochastic rollouts
-    for i in range(args.n_samples):
+    rollout = jax.jit(lambda x, key: integrator.forward_rollout(x, key))
+    for _ in tqdm(range(args.n_samples), desc="Generating samples", unit="sample"):
         sample_key, sub = random.split(sample_key)
-        preds = integrator.forward_rollout(x0, sub)
+        preds = rollout(x0, sub)
         preds = inverse_transform(preds)
         yield np.asarray(preds[0])
 
