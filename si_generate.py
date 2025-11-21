@@ -54,7 +54,8 @@ def _load_input(
                 f"sample_idx {sample_idx} out of range for target dataset of size {len(target_maps)}"
             )
         target = np.asarray(
-            forward_transform(_add_channel_last(np.asarray(target_maps[sample_idx]))), dtype=np.float32
+            forward_transform(_add_channel_last(np.asarray(target_maps[sample_idx]))),
+            dtype=np.float32,
         )
 
     return x0, cosmos, target
@@ -240,7 +241,7 @@ def main():
     parser.add_argument("--eps", type=float, default=5e-3)
     parser.add_argument("--t-min", type=float, default=1e-9)
     parser.add_argument("--t-max", type=float, default=1.0 - 1e-9)
-    parser.add_argument("--integrator-steps", type=int, default=3000)
+    parser.add_argument("--integrator-steps", type=int, default=10000)
     parser.add_argument("--n-save", type=int, default=1)
     parser.add_argument("--n-likelihood", type=int, default=1)
     parser.add_argument("--gamma-type", type=str, default="brownian")
