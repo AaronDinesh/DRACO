@@ -1,6 +1,6 @@
 import argparse
 from pathlib import Path
-from typing import Callable, Iterable, Tuple
+from typing import Iterable, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -27,7 +27,7 @@ def _load_input(
     sample_idx: int,
     transform_name: str,
     target_maps_path: str | None = None,
-) -> Tuple[jnp.ndarray, jnp.ndarray, Callable[[jnp.ndarray], jnp.ndarray], np.ndarray | None]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, np.ndarray | None]:
     input_maps = np.load(input_maps_path, mmap_mode="r")
     cosmos_params = pd.read_csv(params_path, header=None, sep=" ")
     cosmos_params = jnp.asarray(cosmos_params.to_numpy(), dtype=jnp.float32)
@@ -37,7 +37,7 @@ def _load_input(
             f"sample_idx {sample_idx} out of range for dataset of size {len(input_maps)}"
         )
 
-    forward_transform, inverse_transform = make_transform(name=transform_name)
+    forward_transform, _ = make_transform(name=transform_name)
     cosmos_mu = jnp.mean(cosmos_params, axis=0)
     cosmos_sigma = jnp.std(cosmos_params, axis=0) + 1e-6
 
@@ -54,10 +54,10 @@ def _load_input(
                 f"sample_idx {sample_idx} out of range for target dataset of size {len(target_maps)}"
             )
         target = np.asarray(
-            _add_channel_last(np.asarray(target_maps[sample_idx])), dtype=np.float32
+            forward_transform(_add_channel_last(np.asarray(target_maps[sample_idx]))), dtype=np.float32
         )
 
-    return x0, cosmos, inverse_transform, target
+    return x0, cosmos, target
 
 
 def _build_models(
@@ -142,7 +142,7 @@ def generate_samples(
     master_key = random.key(args.seed)
     model_key, sample_key = random.split(master_key)
 
-    x0, cosmos, inverse_transform, target = _load_input(
+    x0, cosmos, target = _load_input(
         args.input_maps,
         args.cosmos_params,
         args.sample_idx,
@@ -192,7 +192,6 @@ def generate_samples(
         for _ in tqdm(range(args.n_samples), desc="Generating samples", unit="sample"):
             sample_key, sub = random.split(sample_key)
             preds = rollout(x0, sub)
-            preds = inverse_transform(preds)
             yield np.asarray(preds[0])
 
     return target, _pred_iter()
