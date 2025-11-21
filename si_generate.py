@@ -10,6 +10,7 @@ import optax
 import pandas as pd
 from dotenv import load_dotenv
 from flax import nnx
+from PIL import Image
 from tqdm import tqdm
 
 from src.interpolants import LinearInterpolant, SDEIntegrator, StochasticInterpolantUNet, make_gamma
@@ -31,13 +32,17 @@ def _load_input(
     cosmos_params = jnp.asarray(cosmos_params.to_numpy(), dtype=jnp.float32)
 
     if sample_idx < 0 or sample_idx >= len(input_maps):
-        raise ValueError(f"sample_idx {sample_idx} out of range for dataset of size {len(input_maps)}")
+        raise ValueError(
+            f"sample_idx {sample_idx} out of range for dataset of size {len(input_maps)}"
+        )
 
     forward_transform, inverse_transform = make_transform(name=transform_name)
     cosmos_mu = jnp.mean(cosmos_params, axis=0)
     cosmos_sigma = jnp.std(cosmos_params, axis=0) + 1e-6
 
-    x0 = jnp.asarray(forward_transform(_add_channel_last(jnp.asarray(input_maps[sample_idx]))), dtype=jnp.float32)
+    x0 = jnp.asarray(
+        forward_transform(_add_channel_last(jnp.asarray(input_maps[sample_idx]))), dtype=jnp.float32
+    )
     cosmos = jnp.asarray((cosmos_params[sample_idx] - cosmos_mu) / cosmos_sigma, dtype=jnp.float32)
 
     return x0, cosmos, inverse_transform
@@ -178,20 +183,31 @@ def generate_samples(
 def save_outputs(outputs: Iterable[np.ndarray], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for idx, arr in enumerate(outputs):
-        out_path = output_dir / f"sample_{idx:03d}.npy"
-        np.save(out_path, arr)
+        arr_np = np.asarray(arr)
+        # Robust per-sample scaling to [0, 255] for visualization.
+        lo = np.percentile(arr_np, 1.0)
+        hi = np.percentile(arr_np, 99.0)
+        if np.isclose(hi, lo):
+            hi = lo + 1e-6
+        arr_np = np.clip((arr_np - lo) / (hi - lo), 0.0, 1.0)
+        arr_uint8 = (arr_np * 255.0).astype(np.uint8)
+        if arr_uint8.ndim == 3 and arr_uint8.shape[-1] == 1:
+            arr_uint8 = arr_uint8[..., 0]
+        img = Image.fromarray(arr_uint8)
+        out_path = output_dir / f"sample_{idx:03d}.png"
+        img.save(out_path)
 
 
 def main():
     parser = argparse.ArgumentParser("SI sampler: generate N outputs from one input")
-
+    # fmt: off
     parser.add_argument("--input-maps", required=True, help="Path to input .npy array (N,H,W[,C])")
     parser.add_argument("--cosmos-params", required=True, help="Path to cosmos params txt/csv")
     parser.add_argument("--sample-idx", type=int, default=0, help="Index of the input to generate for")
     parser.add_argument("--velocity-checkpoint-path", required=True, help="Velocity model checkpoint")
     parser.add_argument("--score-checkpoint-path", required=True, help="Score model checkpoint")
     parser.add_argument("--output-dir", required=True, help="Directory to write generated samples")
-    parser.add_argument("--n-samples", type=int, default=4, help="Number of stochastic generations")
+    parser.add_argument("--n-samples", type=int, default=15, help="Number of stochastic generations")
     parser.add_argument("--img-channels", type=int, default=1)
     parser.add_argument("--transform-name", default="log10")
     parser.add_argument("--eps", type=float, default=5e-3)
@@ -204,7 +220,7 @@ def main():
     parser.add_argument("--gamma-a", type=float, default=1.0)
     parser.add_argument("--time-embed-dim", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
-
+    # fmt: on
     args = parser.parse_args()
 
     outputs = generate_samples(args)
