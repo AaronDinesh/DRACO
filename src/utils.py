@@ -311,15 +311,8 @@ def save_checkpoint(
 def restore_checkpoint(  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
     checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer
 ) -> dict[str, Any]:
-    # Supply target trees so Orbax restores into the live module/optimizer structure.
-    _, model_state = nnx.split(model)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    _, opt_state = nnx.split(optimizer)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportUnknownArgumentType]
-    target = {
-        "model_state": model_state,
-        "opt_state": opt_state,
-    }
-
-    checkpoint = _STD_CHKPTR.restore(checkpoint_path, item=target)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    # Restore full payload (supports older checkpoints without metadata keys).
+    checkpoint = _STD_CHKPTR.restore(checkpoint_path)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
     nnx.update(optimizer, checkpoint["opt_state"])  # pyright: ignore[reportUnknownMemberType]
