@@ -291,7 +291,7 @@ def save_checkpoint(
     if data_stats is not None:
         payload["data_stats"] = data_stats  # <— NEW
     if wandb_run_id is not None:
-        payload["wandb_run_id"] = wandb_run_id
+        payload["wandb_run_id_bytes"] = np.frombuffer(wandb_run_id.encode("utf-8"), dtype=np.uint8)
 
     if alt_name is None:
         save_path = ckpt_dir / f"{model_name}_epoch_{epoch:07d}_step_{step:07d}"
@@ -324,11 +324,20 @@ def restore_checkpoint(  # pyright: ignore[reportMissingTypeArgument, reportUnkn
     nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
     nnx.update(optimizer, checkpoint["opt_state"])  # pyright: ignore[reportUnknownMemberType]
 
+    wandb_run_id = None
+    if "wandb_run_id_bytes" in checkpoint and checkpoint["wandb_run_id_bytes"] is not None:
+        try:
+            wandb_run_id = bytes(
+                np.asarray(checkpoint["wandb_run_id_bytes"], dtype=np.uint8)
+            ).decode("utf-8")
+        except Exception:
+            wandb_run_id = None
+
     return {
         "data_stats": checkpoint.get("data_stats", None),
         "epoch": checkpoint.get("epoch", None),
         "step": checkpoint.get("step", None),
-        "wandb_run_id": checkpoint.get("wandb_run_id", None),
+        "wandb_run_id": wandb_run_id,
     }
 
 
