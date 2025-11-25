@@ -25,6 +25,8 @@ def make_train_test_loaders(
     csv_path: str,
     test_ratio: float = 0.2,
     transform_name: TransformName = "signed_log1p",
+    mu_override: jnp.ndarray | None = None,
+    sigma_override: jnp.ndarray | None = None,
 ):
     input_maps = jnp.load(input_data_path, mmap_mode="r")
     output_maps = jnp.load(output_data_path, mmap_mode="r")
@@ -53,8 +55,14 @@ def make_train_test_loaders(
     train_idx = random_shuffle[n_test:]
 
     # after train_idx/test_idx are defined
-    mu = jnp.mean(cosmos_params[train_idx], axis=0)
-    sigma = jnp.std(cosmos_params[train_idx], axis=0) + 1e-6
+    if mu_override is None:
+        mu = jnp.mean(cosmos_params[train_idx], axis=0)
+    else:
+        mu = mu_override
+    if sigma_override is None:
+        sigma = jnp.std(cosmos_params[train_idx], axis=0) + 1e-6
+    else:
+        sigma = sigma_override
 
     forward_transform, _ = make_transform(name=transform_name)
 
@@ -284,14 +292,7 @@ def save_checkpoint(
     payload = {  # pyright: ignore[reportUnknownVariableType]
         "model_state": model_state,
         "opt_state": opt_state,
-        "epoch": epoch,
-        "step": step,
     }
-
-    if data_stats is not None:
-        payload["data_stats"] = data_stats  # <— NEW
-    if wandb_run_id is not None:
-        payload["wandb_run_id_bytes"] = np.frombuffer(wandb_run_id.encode("utf-8"), dtype=np.uint8)
 
     if alt_name is None:
         save_path = ckpt_dir / f"{model_name}_epoch_{epoch:07d}_step_{step:07d}"
@@ -303,6 +304,21 @@ def save_checkpoint(
         shutil.rmtree(save_path)
 
     _STD_CHKPTR.save(str(save_path), payload)
+    _STD_CHKPTR.wait_until_finished()
+
+    # Persist metadata alongside the Orbax payload to avoid tree-shape mismatches.
+    meta = {
+        "epoch": epoch,
+        "step": step,
+        "wandb_run_id": wandb_run_id,
+        "data_stats": None,
+    }
+    if data_stats is not None:
+        meta["data_stats"] = {
+            k: np.asarray(v) if v is not None else None for k, v in data_stats.items()
+        }  # type: ignore[assignment]
+    meta_path = Path(save_path) / "metadata.npz"
+    np.savez_compressed(meta_path, **meta)  # type: ignore[arg-type]
 
     if wait:
         _STD_CHKPTR.wait_until_finished()
@@ -311,51 +327,35 @@ def save_checkpoint(
 def restore_checkpoint(  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
     checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer
 ) -> dict[str, Any]:
-    # Supply target trees so Orbax restores into the live module/optimizer structure,
-    # while allowing optional metadata fields.
+    # Restore model/optimizer payload; metadata is loaded separately.
     _, model_state = nnx.split(model)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     _, opt_state = nnx.split(optimizer)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportUnknownArgumentType]
-    target = {
-        "model_state": model_state,
-        "opt_state": opt_state,
-        "epoch": None,
-        "step": None,
-        "data_stats": None,
-        "wandb_run_id_bytes": None,
-    }
-    restore_args = ocp.args.Composite({
-        "model_state": None,
-        "opt_state": None,
-        "epoch": ocp.args.RestoreArgs(restore_type=None),
-        "step": ocp.args.RestoreArgs(restore_type=None),
-        "data_stats": ocp.args.RestoreArgs(restore_type=None),
-        "wandb_run_id_bytes": ocp.args.RestoreArgs(restore_type=None),
-    })
-
-    checkpoint = _STD_CHKPTR.restore(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        checkpoint_path,
-        item=target,
-        restore_args=restore_args,
-    )
+    target = {"model_state": model_state, "opt_state": opt_state}
+    checkpoint = _STD_CHKPTR.restore(checkpoint_path, item=target)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
     nnx.update(optimizer, checkpoint["opt_state"])  # pyright: ignore[reportUnknownMemberType]
 
-    wandb_run_id = None
-    if "wandb_run_id_bytes" in checkpoint and checkpoint["wandb_run_id_bytes"] is not None:
+    meta = {"data_stats": None, "epoch": None, "step": None, "wandb_run_id": None}
+    meta_path = Path(checkpoint_path) / "metadata.npz"
+    if meta_path.exists():
         try:
-            wandb_run_id = bytes(
-                np.asarray(checkpoint["wandb_run_id_bytes"], dtype=np.uint8)
-            ).decode("utf-8")
+            np_meta = np.load(meta_path, allow_pickle=True)
+            meta["epoch"] = int(np_meta["epoch"]) if "epoch" in np_meta else None
+            meta["step"] = int(np_meta["step"]) if "step" in np_meta else None
+            meta["wandb_run_id"] = (
+                str(np_meta["wandb_run_id"]) if "wandb_run_id" in np_meta else None
+            )
+            if "data_stats" in np_meta and np_meta["data_stats"] is not None:
+                ds_obj = np_meta["data_stats"].item()
+                if isinstance(ds_obj, dict):
+                    meta["data_stats"] = {
+                        k: jnp.asarray(v) if v is not None else None for k, v in ds_obj.items()
+                    }
         except Exception:
-            wandb_run_id = None
+            pass
 
-    return {
-        "data_stats": checkpoint.get("data_stats", None),
-        "epoch": checkpoint.get("epoch", None),
-        "step": checkpoint.get("step", None),
-        "wandb_run_id": wandb_run_id,
-    }
+    return meta
 
 
 def delete_checkpoint(checkpoint_path: str, folder_name: str) -> None:

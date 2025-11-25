@@ -75,6 +75,8 @@ def make_train_test_loaders(
     csv_path: str,
     test_ratio: float = 0.2,
     transform_name: TransformName = "signed_log1p",
+    mu_override: jnp.ndarray | None = None,
+    sigma_override: jnp.ndarray | None = None,
 ):
     input_maps_np = np.load(input_data_path, mmap_mode="r")
     output_maps_np = np.load(output_data_path, mmap_mode="r")
@@ -109,8 +111,14 @@ def make_train_test_loaders(
     test_idx = random_shuffle[:n_test]
     train_idx = random_shuffle[n_test:]
 
-    mu = jnp.mean(cosmos_params[train_idx], axis=0)
-    sigma = jnp.std(cosmos_params[train_idx], axis=0) + 1e-6
+    if mu_override is None:
+        mu = jnp.mean(cosmos_params[train_idx], axis=0)
+    else:
+        mu = mu_override
+    if sigma_override is None:
+        sigma = jnp.std(cosmos_params[train_idx], axis=0) + 1e-6
+    else:
+        sigma = sigma_override
     standardized_params = ((cosmos_params - mu) / sigma).astype(jnp.float32)
 
     assert len(jnp.intersect1d(train_idx, test_idx)) == 0
@@ -647,6 +655,7 @@ def main(parser: argparse.ArgumentParser):
 
     master_key = random.key(0)
     gen_key, disc_key, data_key, train_test_key = random.split(master_key, 4)  # pyright: ignore[reportAny]
+    base_train_test_key = train_test_key
 
     print("----- Creating Dataset Loaders -----")
     (
@@ -711,6 +720,7 @@ def main(parser: argparse.ArgumentParser):
     start_epoch = 1
     start_step = 0
     resume_wandb_id: str | None = None
+    stored_data_stats: dict[str, jnp.ndarray] | None = None
 
     if args.generator_checkpoint_path:
         print(f"----- Loading Generator from {args.generator_checkpoint_path} -----")
@@ -720,6 +730,8 @@ def main(parser: argparse.ArgumentParser):
         start_epoch = max(start_epoch, (int(gen_epoch) if gen_epoch is not None else 0) + 1)
         start_step = max(start_step, int(gen_step) if gen_step is not None else 0)
         resume_wandb_id = resume_wandb_id or gen_ckpt.get("wandb_run_id")
+        if gen_ckpt.get("data_stats") is not None:
+            stored_data_stats = gen_ckpt["data_stats"]
 
     if args.discriminator_checkpoint_path:
         print(f"----- Loading Discriminator from {args.discriminator_checkpoint_path} -----")
@@ -729,6 +741,33 @@ def main(parser: argparse.ArgumentParser):
         start_epoch = max(start_epoch, (int(disc_epoch) if disc_epoch is not None else 0) + 1)
         start_step = max(start_step, int(disc_step) if disc_step is not None else 0)
         resume_wandb_id = resume_wandb_id or disc_ckpt.get("wandb_run_id")
+        if disc_ckpt.get("data_stats") is not None:
+            stored_data_stats = disc_ckpt["data_stats"]
+
+    if stored_data_stats is not None:
+        mu_override = stored_data_stats.get("cosmos_params_mu")
+        sigma_override = stored_data_stats.get("cosmos_params_sigma")
+        if mu_override is not None and sigma_override is not None:
+            print("----- Rebuilding loaders with checkpoint cosmos stats -----")
+            (
+                train_loader,
+                test_loader,
+                n_train,
+                n_test,
+                img_size,
+                cosmos_params_len,
+                cosmos_params_mu,
+                cosmos_params_sigma,
+            ) = make_train_test_loaders(
+                key=base_train_test_key,  # pyright: ignore[reportAny]
+                batch_size=int(args.batch_size),  # pyright: ignore[reportAny]
+                input_data_path=args.input_maps,  # pyright: ignore[reportAny]
+                output_data_path=args.output_maps,  # pyright: ignore[reportAny]
+                csv_path=args.cosmos_params,  # pyright: ignore[reportAny]
+                transform_name=args.transform_name,  # pyright: ignore[reportAny]
+                mu_override=mu_override,
+                sigma_override=sigma_override,
+            )
 
     if start_epoch > 1 or start_step > 0:
         print(f"----- Resuming from epoch {start_epoch} (global step {start_step}) -----")

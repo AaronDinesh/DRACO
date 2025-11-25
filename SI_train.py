@@ -434,6 +434,7 @@ def main(parser: argparse.ArgumentParser):
 
     master_key = random.key(args.seed)
     vel_key, score_key, data_key, train_test_key = random.split(master_key, 4)
+    base_train_test_key = train_test_key
 
     print("----- Creating Dataset Loaders -----")
     (
@@ -493,6 +494,7 @@ def main(parser: argparse.ArgumentParser):
     start_epoch = 1
     start_step = 0
     resume_wandb_id: str | None = None
+    stored_data_stats: dict[str, jnp.ndarray] | None = None
 
     if args.velocity_checkpoint_path:
         print(f"----- Loading Velocity Model from {args.velocity_checkpoint_path} -----")
@@ -502,6 +504,8 @@ def main(parser: argparse.ArgumentParser):
         start_epoch = max(start_epoch, (int(vel_epoch) if vel_epoch is not None else 0) + 1)
         start_step = max(start_step, int(vel_step) if vel_step is not None else 0)
         resume_wandb_id = resume_wandb_id or vel_ckpt.get("wandb_run_id")
+        if vel_ckpt.get("data_stats") is not None:
+            stored_data_stats = vel_ckpt["data_stats"]
 
     if args.score_checkpoint_path:
         print(f"----- Loading Score Model from {args.score_checkpoint_path} -----")
@@ -511,6 +515,34 @@ def main(parser: argparse.ArgumentParser):
         start_epoch = max(start_epoch, (int(score_epoch) if score_epoch is not None else 0) + 1)
         start_step = max(start_step, int(score_step) if score_step is not None else 0)
         resume_wandb_id = resume_wandb_id or score_ckpt.get("wandb_run_id")
+        if score_ckpt.get("data_stats") is not None:
+            stored_data_stats = score_ckpt["data_stats"]
+
+    if stored_data_stats is not None:
+        mu_override = stored_data_stats.get("cosmos_params_mu")
+        sigma_override = stored_data_stats.get("cosmos_params_sigma")
+        if mu_override is not None and sigma_override is not None:
+            print("----- Rebuilding loaders with checkpoint cosmos stats -----")
+            (
+                train_loader,
+                test_loader,
+                n_train,
+                n_test,
+                img_size,
+                cosmos_params_len,
+                cosmos_params_mu,
+                cosmos_params_sigma,
+            ) = make_train_test_loaders(
+                key=base_train_test_key,
+                batch_size=args.batch_size,
+                input_data_path=args.input_maps,
+                output_data_path=args.output_maps,
+                csv_path=args.cosmos_params,
+                test_ratio=args.test_ratio,
+                transform_name=args.transform_name,
+                mu_override=mu_override,
+                sigma_override=sigma_override,
+            )
 
     t_grid = jnp.linspace(args.t_min, args.t_max, args.integrator_steps + 1)
     interpolant = LinearInterpolant(
