@@ -224,6 +224,9 @@ def train(
 
         run = wandb.init(**wandb_kwargs)  # pyright: ignore[reportUnusedCallResult]
         run_id = run.id if run is not None else run_id
+        wandb.define_metric("epoch")
+        wandb.define_metric("train/*", step_metric="epoch")
+        wandb.define_metric("eval/*", step_metric="epoch")
 
     train_key, test_key = random.split(data_key)
     global_step = start_step
