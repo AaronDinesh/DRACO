@@ -372,6 +372,9 @@ def train(
     data_key: Array,
     use_wandb: bool,
     args: argparse.Namespace,
+    start_epoch: int = 1,
+    start_step: int = 0,
+    resume_wandb_id: str | None = None,
     **kwargs,
 ) -> None:
     # With drop_last=True in the loaders, the true number of steps is
@@ -390,11 +393,12 @@ def train(
     best_disc_acc: float = 0.0
     best_gan_loss: float = jnp.inf
 
+    run_id = resume_wandb_id
     if use_wandb:
         print("----- Setting up WANDB -----")
         _ = wandb.login()
         wandb.require("core")
-        wandb.init(  # pyright: ignore[reportUnusedCallResult]
+        wandb_init_kwargs = dict(
             entity="aarondinesh2002-epfl",
             project=args.wandb_proj_name,  # pyright: ignore[reportAny]
             name=args.wandb_run_name,  # pyright: ignore[reportAny]
@@ -417,17 +421,25 @@ def train(
                 cosmos_params_sigma=cosmos_params_sigma,
             ),
         )
+        if run_id is not None:
+            wandb_init_kwargs["id"] = run_id
+            wandb_init_kwargs["resume"] = "allow"
+
+        run = wandb.init(**wandb_init_kwargs)  # pyright: ignore[reportUnusedCallResult]
+        run_id = run.id if run is not None else run_id
 
     train_key, test_key = random.split(data_key)
 
-    global_step = 0
+    global_step = start_step
+    last_epoch = start_epoch - 1
     for epoch in tqdm(
-        range(1, num_epochs + 1),
-        total=num_epochs,
+        range(start_epoch, num_epochs + 1),
+        total=max(0, num_epochs - start_epoch + 1),
         leave=False,
         position=0,
         desc="Running Epoch",
     ):
+        last_epoch = epoch
         # ---------------- TRAIN ----------------
         step = 0
         train_key = random.fold_in(train_key, epoch)
@@ -489,17 +501,23 @@ def train(
         if epoch % 10 == 0:
             save_checkpoint(
                 args.checkpoint_dir,
+                epoch=epoch,
+                step=global_step,
                 model=generator,
                 optimizer=opt_gen,
                 alt_name=f"generator_epoch_{epoch:03d}_gloss_{g_metrics['g_loss']:.03f}",
                 data_stats=data_stats,
+                wandb_run_id=run_id,
             )
             save_checkpoint(
                 args.checkpoint_dir,
+                epoch=epoch,
+                step=global_step,
                 model=discriminator,
                 optimizer=opt_disc,
                 alt_name=f"discriminator_epoch_{epoch:03d}_dacc_{d_metrics['d_acc']:.03f}",
                 data_stats=data_stats,
+                wandb_run_id=run_id,
             )
 
         # Accumulate averages across eval steps
@@ -548,12 +566,13 @@ def train(
             best_disc_acc = eval_avg["d_acc"]
             save_checkpoint(
                 args.checkpoint_dir,
-                epoch,
-                global_step,
-                discriminator,
-                opt_disc,
+                epoch=epoch,
+                step=global_step,
+                model=discriminator,
+                optimizer=opt_disc,
                 alt_name=f"BEST_DISC_ACC_acc_{best_disc_acc:.04f}",
                 data_stats=data_stats,
+                wandb_run_id=run_id,
             )
 
         if eval_avg["g_loss"] < best_gan_loss:
@@ -562,12 +581,13 @@ def train(
             best_gan_loss = eval_avg["g_loss"]
             save_checkpoint(
                 args.checkpoint_dir,
-                epoch,
-                global_step,
-                generator,
-                opt_gen,
+                epoch=epoch,
+                step=global_step,
+                model=generator,
+                optimizer=opt_gen,
                 alt_name=f"BEST_GAN_LOSS_loss_{best_gan_loss:.04f}",
                 data_stats=data_stats,
+                wandb_run_id=run_id,
             )
 
         print(
@@ -593,23 +613,25 @@ def train(
 
     save_checkpoint(
         args.checkpoint_dir,
-        None,
-        None,
-        generator,
-        opt_gen,
+        epoch=last_epoch,
+        step=global_step,
+        model=generator,
+        optimizer=opt_gen,
         alt_name=f"Final_Generator",
         data_stats=data_stats,
+        wandb_run_id=run_id,
         wait=True,
     )
 
     save_checkpoint(
         args.checkpoint_dir,
-        None,
-        None,
-        discriminator,
-        opt_disc,
+        epoch=last_epoch,
+        step=global_step,
+        model=discriminator,
+        optimizer=opt_disc,
         alt_name=f"Final_Discriminator",
         data_stats=data_stats,
+        wandb_run_id=run_id,
         wait=True,
     )
 
@@ -683,13 +705,30 @@ def main(parser: argparse.ArgumentParser):
         wrt=nnx.Param,
     )
 
+    start_epoch = 1
+    start_step = 0
+    resume_wandb_id: str | None = None
+
     if args.generator_checkpoint_path:
         print(f"----- Loading Generator from {args.generator_checkpoint_path} -----")
-        restore_checkpoint(args.generator_checkpoint_path, generator, opt_gen)
+        gen_ckpt = restore_checkpoint(args.generator_checkpoint_path, generator, opt_gen)
+        gen_epoch = gen_ckpt.get("epoch")
+        gen_step = gen_ckpt.get("step")
+        start_epoch = max(start_epoch, (int(gen_epoch) if gen_epoch is not None else 0) + 1)
+        start_step = max(start_step, int(gen_step) if gen_step is not None else 0)
+        resume_wandb_id = resume_wandb_id or gen_ckpt.get("wandb_run_id")
 
     if args.discriminator_checkpoint_path:
         print(f"----- Loading Discriminator from {args.discriminator_checkpoint_path} -----")
-        restore_checkpoint(args.discriminator_checkpoint_path, discriminator, opt_disc)
+        disc_ckpt = restore_checkpoint(args.discriminator_checkpoint_path, discriminator, opt_disc)
+        disc_epoch = disc_ckpt.get("epoch")
+        disc_step = disc_ckpt.get("step")
+        start_epoch = max(start_epoch, (int(disc_epoch) if disc_epoch is not None else 0) + 1)
+        start_step = max(start_step, int(disc_step) if disc_step is not None else 0)
+        resume_wandb_id = resume_wandb_id or disc_ckpt.get("wandb_run_id")
+
+    if start_epoch > 1 or start_step > 0:
+        print(f"----- Resuming from epoch {start_epoch} (global step {start_step}) -----")
 
     print("----- Begining Training Run -----")
     train(
@@ -712,6 +751,9 @@ def main(parser: argparse.ArgumentParser):
         args=args,
         cosmos_params_mu=cosmos_params_mu,
         cosmos_params_sigma=cosmos_params_sigma,
+        start_epoch=start_epoch,
+        start_step=start_step,
+        resume_wandb_id=resume_wandb_id,
     )
 
 

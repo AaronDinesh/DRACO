@@ -1,7 +1,7 @@
 import collections.abc
 import shutil
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 import flax.nnx as nnx
 import jax
@@ -272,6 +272,7 @@ def save_checkpoint(
     model_name: str | None = None,
     alt_name: str | None = None,
     data_stats=None,
+    wandb_run_id: str | None = None,
     wait: bool = False,
 ) -> None:
     ckpt_dir = Path(checkpoint_dir)
@@ -283,15 +284,23 @@ def save_checkpoint(
     payload = {  # pyright: ignore[reportUnknownVariableType]
         "model_state": model_state,
         "opt_state": opt_state,
+        "epoch": epoch,
+        "step": step,
     }
 
     if data_stats is not None:
         payload["data_stats"] = data_stats  # <— NEW
+    if wandb_run_id is not None:
+        payload["wandb_run_id"] = wandb_run_id
 
     if alt_name is None:
         save_path = ckpt_dir / f"{model_name}_epoch_{epoch:07d}_step_{step:07d}"
     else:
         save_path = ckpt_dir / alt_name
+
+    # Allow overwriting fixed-name checkpoints (e.g., "Final_*").
+    if save_path.exists():
+        shutil.rmtree(save_path)
 
     _STD_CHKPTR.save(str(save_path), payload)
 
@@ -299,7 +308,9 @@ def save_checkpoint(
         _STD_CHKPTR.wait_until_finished()
 
 
-def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer):  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
+def restore_checkpoint(  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]
+    checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer
+) -> dict[str, Any]:
     # Supply target trees so Orbax restores into the live module/optimizer structure.
     _, model_state = nnx.split(model)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     _, opt_state = nnx.split(optimizer)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportUnknownArgumentType]
@@ -313,7 +324,12 @@ def restore_checkpoint(checkpoint_path: str, model: nnx.Module, optimizer: nnx.O
     nnx.update(model, checkpoint["model_state"])  # pyright: ignore[reportUnknownMemberType]
     nnx.update(optimizer, checkpoint["opt_state"])  # pyright: ignore[reportUnknownMemberType]
 
-    return checkpoint.get("data_stats", None)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    return {
+        "data_stats": checkpoint.get("data_stats", None),
+        "epoch": checkpoint.get("epoch", None),
+        "step": checkpoint.get("step", None),
+        "wandb_run_id": checkpoint.get("wandb_run_id", None),
+    }
 
 
 def delete_checkpoint(checkpoint_path: str, folder_name: str) -> None:

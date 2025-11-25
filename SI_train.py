@@ -5,12 +5,12 @@ from typing import Iterator
 import jax
 import jax.numpy as jnp
 import jax.random as random
+import numpy as np
 import optax
 from dotenv import load_dotenv
 from flax import nnx
 from jax._src.typing import Array
 from tqdm.auto import tqdm
-import numpy as np
 
 import wandb
 from src.interpolants import (
@@ -46,9 +46,7 @@ def _velocity_loss(
     x1 = batch["targets"]
     cosmos = batch["params"]
 
-    def conditioned_b(
-        x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray
-    ) -> jnp.ndarray:
+    def conditioned_b(x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray) -> jnp.ndarray:
         return model(x, cosmos_vec, t)
 
     return batch_loss_b(conditioned_b, x0, x1, t_batch, cosmos, interpolant, key)
@@ -65,9 +63,7 @@ def _score_loss(
     x1 = batch["targets"]
     cosmos = batch["params"]
 
-    def conditioned_s(
-        x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray
-    ) -> jnp.ndarray:
+    def conditioned_s(x: jnp.ndarray, t: jnp.ndarray, cosmos_vec: jnp.ndarray) -> jnp.ndarray:
         return model(x, cosmos_vec, t)
 
     return batch_loss_s(conditioned_s, x0, x1, t_batch, cosmos, interpolant, key)
@@ -179,6 +175,9 @@ def train(
     cosmos_params_sigma: jnp.ndarray,
     t_min: float,
     t_max: float,
+    start_epoch: int = 1,
+    start_step: int = 0,
+    resume_wandb_id: str | None = None,
 ) -> None:
     train_steps_per_epoch = math.ceil(n_train / batch_size)
     eval_steps_per_epoch = math.ceil(n_test / batch_size)
@@ -187,11 +186,12 @@ def train(
         "cosmos_params_sigma": cosmos_params_sigma,
     }
 
+    run_id = resume_wandb_id
     if use_wandb:
         print("----- Setting up WANDB -----")
         _ = wandb.login()
         wandb.require("core")
-        wandb.init(  # pyright: ignore[reportUnusedCallResult]
+        wandb_kwargs = dict(
             entity="aarondinesh2002-epfl",
             project=args.wandb_proj_name,
             name=args.wandb_run_name,
@@ -218,18 +218,26 @@ def train(
                 cosmos_params_sigma=np.asarray(cosmos_params_sigma),
             ),
         )
+        if run_id is not None:
+            wandb_kwargs["id"] = run_id
+            wandb_kwargs["resume"] = "allow"
+
+        run = wandb.init(**wandb_kwargs)  # pyright: ignore[reportUnusedCallResult]
+        run_id = run.id if run is not None else run_id
 
     train_key, test_key = random.split(data_key)
-    global_step = 0
+    global_step = start_step
 
     epoch_loop = tqdm(
-        range(1, num_epochs + 1),
-        total=num_epochs,
+        range(start_epoch, num_epochs + 1),
+        total=max(0, num_epochs - start_epoch + 1),
         leave=False,
         position=0,
         desc="Epoch",
     )
+    last_epoch = start_epoch - 1
     for epoch in epoch_loop:
+        last_epoch = epoch
         step = 0
         train_key = random.fold_in(train_key, epoch)
         test_key = random.fold_in(test_key, epoch)
@@ -286,12 +294,8 @@ def train(
             global_step += 1
 
             if step % log_every == 0 or step == train_steps_per_epoch:
-                vel_log = {
-                    f"train/{k}": v for k, v in _to_float_dict(vel_metrics).items()
-                }
-                score_log = {
-                    f"train/{k}": v for k, v in _to_float_dict(score_metrics).items()
-                }
+                vel_log = {f"train/{k}": v for k, v in _to_float_dict(vel_metrics).items()}
+                score_log = {f"train/{k}": v for k, v in _to_float_dict(score_metrics).items()}
                 log = {"epoch": epoch, "step": global_step} | vel_log | score_log
                 last_vel_log = vel_log
                 last_score_log = score_log
@@ -310,17 +314,23 @@ def train(
         if epoch % checkpoint_every == 0:
             save_checkpoint(
                 args.checkpoint_dir,
+                epoch=epoch,
+                step=global_step,
                 model=vel_model,
                 optimizer=vel_opt,
                 alt_name=f"velocity_epoch_{epoch:03d}",
                 data_stats=data_stats,
+                wandb_run_id=run_id,
             )
             save_checkpoint(
                 args.checkpoint_dir,
+                epoch=epoch,
+                step=global_step,
                 model=score_model,
                 optimizer=score_opt,
                 alt_name=f"score_epoch_{epoch:03d}",
                 data_stats=data_stats,
+                wandb_run_id=run_id,
             )
 
         if epoch % eval_every == 0:
@@ -358,10 +368,7 @@ def train(
                 last_eval_batch = batch
                 metrics = dict(metrics)
                 eval_metrics_accum = (
-                    {
-                        k: eval_metrics_accum.get(k, 0.0) + float(v)
-                        for k, v in metrics.items()
-                    }
+                    {k: eval_metrics_accum.get(k, 0.0) + float(v) for k, v in metrics.items()}
                     if eval_metrics_accum
                     else {k: float(v) for k, v in metrics.items()}
                 )
@@ -373,14 +380,8 @@ def train(
                 )
             eval_bar.close()
 
-            if (
-                eval_count > 0
-                and final_preds is not None
-                and last_eval_batch is not None
-            ):
-                avg_eval_metrics = {
-                    k: v / eval_count for k, v in eval_metrics_accum.items()
-                }
+            if eval_count > 0 and final_preds is not None and last_eval_batch is not None:
+                avg_eval_metrics = {k: v / eval_count for k, v in eval_metrics_accum.items()}
                 eval_log = {f"eval/{k}": v for k, v in avg_eval_metrics.items()}
                 print(
                     f"[Epoch {epoch:03d} Eval] "
@@ -401,18 +402,24 @@ def train(
 
     save_checkpoint(
         args.checkpoint_dir,
+        epoch=last_epoch,
+        step=global_step,
         model=vel_model,
         optimizer=vel_opt,
         alt_name="velocity_final",
         data_stats=data_stats,
+        wandb_run_id=run_id,
         wait=True,
     )
     save_checkpoint(
         args.checkpoint_dir,
+        epoch=last_epoch,
+        step=global_step,
         model=score_model,
         optimizer=score_opt,
         alt_name="score_final",
         data_stats=data_stats,
+        wandb_run_id=run_id,
         wait=True,
     )
     print("Training finished.")
@@ -480,15 +487,27 @@ def main(parser: argparse.ArgumentParser):
         wrt=nnx.Param,
     )
 
+    start_epoch = 1
+    start_step = 0
+    resume_wandb_id: str | None = None
+
     if args.velocity_checkpoint_path:
-        print(
-            f"----- Loading Velocity Model from {args.velocity_checkpoint_path} -----"
-        )
-        restore_checkpoint(args.velocity_checkpoint_path, vel_model, vel_opt)
+        print(f"----- Loading Velocity Model from {args.velocity_checkpoint_path} -----")
+        vel_ckpt = restore_checkpoint(args.velocity_checkpoint_path, vel_model, vel_opt)
+        vel_epoch = vel_ckpt.get("epoch")
+        vel_step = vel_ckpt.get("step")
+        start_epoch = max(start_epoch, (int(vel_epoch) if vel_epoch is not None else 0) + 1)
+        start_step = max(start_step, int(vel_step) if vel_step is not None else 0)
+        resume_wandb_id = resume_wandb_id or vel_ckpt.get("wandb_run_id")
 
     if args.score_checkpoint_path:
         print(f"----- Loading Score Model from {args.score_checkpoint_path} -----")
-        restore_checkpoint(args.score_checkpoint_path, score_model, score_opt)
+        score_ckpt = restore_checkpoint(args.score_checkpoint_path, score_model, score_opt)
+        score_epoch = score_ckpt.get("epoch")
+        score_step = score_ckpt.get("step")
+        start_epoch = max(start_epoch, (int(score_epoch) if score_epoch is not None else 0) + 1)
+        start_step = max(start_step, int(score_step) if score_step is not None else 0)
+        resume_wandb_id = resume_wandb_id or score_ckpt.get("wandb_run_id")
 
     t_grid = jnp.linspace(args.t_min, args.t_max, args.integrator_steps + 1)
     interpolant = LinearInterpolant(
@@ -497,12 +516,13 @@ def main(parser: argparse.ArgumentParser):
         t_schedule="linear",
         gamma_type=args.gamma_type,
     )
-    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(
-        gamma_type=args.gamma_type, a=args.gamma_a
-    )
+    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(gamma_type=args.gamma_type, a=args.gamma_a)
     interpolant.gamma = gamma_fn
     interpolant.gamma_dot = gamma_dot_fn
     interpolant.gg_dot = gg_dot_fn
+
+    if start_epoch > 1 or start_step > 0:
+        print(f"----- Resuming from epoch {start_epoch} (global step {start_step}) -----")
 
     print("----- Beginning Training -----")
     train(
@@ -531,6 +551,9 @@ def main(parser: argparse.ArgumentParser):
         cosmos_params_sigma=cosmos_params_sigma,
         t_min=args.t_min,
         t_max=args.t_max,
+        start_epoch=start_epoch,
+        start_step=start_step,
+        resume_wandb_id=resume_wandb_id,
     )
 
 
