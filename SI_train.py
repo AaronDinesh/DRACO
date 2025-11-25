@@ -203,6 +203,8 @@ def train(
                 beta1=args.beta1,
                 beta2=args.beta2,
                 epochs=args.epochs,
+                epochs_total=num_epochs,
+                resume_start_epoch=start_epoch,
                 transform_name=args.transform_name,
                 img_size=img_size,
                 img_channels=img_channels,
@@ -556,12 +558,19 @@ def main(parser: argparse.ArgumentParser):
     interpolant.gamma_dot = gamma_dot_fn
     interpolant.gg_dot = gg_dot_fn
 
-    if start_epoch > 1 or start_step > 0:
+    resume_run = start_epoch > 1 or start_step > 0
+    if resume_run:
         print(f"----- Resuming from epoch {start_epoch} (global step {start_step}) -----")
+
+    total_epochs = args.epochs + (start_epoch - 1) if resume_run else args.epochs
+    if resume_run:
+        print(
+            f"----- Training for additional {args.epochs} epochs (target epoch {total_epochs}) -----"
+        )
 
     print("----- Beginning Training -----")
     train(
-        num_epochs=args.epochs,
+        num_epochs=total_epochs,
         batch_size=args.batch_size,
         train_loader=train_loader,
         n_train=n_train,

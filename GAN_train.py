@@ -420,6 +420,8 @@ def train(
                 n_critic=args.n_critic,  # pyright: ignore[reportAny]
                 l1_lambda=args.l1_lambda,
                 epochs=args.epochs,
+                epochs_total=num_epochs,
+                resume_start_epoch=start_epoch,
                 transform_name=args.transform_name,
                 img_size=img_size,
                 cond_dim=cosmos_params_len,
@@ -769,12 +771,19 @@ def main(parser: argparse.ArgumentParser):
                 sigma_override=sigma_override,
             )
 
-    if start_epoch > 1 or start_step > 0:
+    resume_run = start_epoch > 1 or start_step > 0
+    if resume_run:
         print(f"----- Resuming from epoch {start_epoch} (global step {start_step}) -----")
+
+    total_epochs = int(args.epochs) + (start_epoch - 1) if resume_run else int(args.epochs)
+    if resume_run:
+        print(
+            f"----- Training for additional {args.epochs} epochs (target epoch {total_epochs}) -----"
+        )
 
     print("----- Begining Training Run -----")
     train(
-        num_epochs=int(args.epochs),  # pyright: ignore[reportAny]
+        num_epochs=total_epochs,  # pyright: ignore[reportAny]
         batch_size=int(args.batch_size),  # pyright: ignore[reportAny]
         train_loader=train_loader,
         n_train=n_train,
