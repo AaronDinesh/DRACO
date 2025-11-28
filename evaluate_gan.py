@@ -186,12 +186,12 @@ def evaluate(args: argparse.Namespace) -> None:
     )
     gen_ckpt_path = (
         args.generator_noise_checkpoint_path
-        if args.add_noise and args.generator_noise_checkpoint_path
+        if args.generator_noise_checkpoint_path is not None
         else args.generator_checkpoint_path
     )
     disc_ckpt_path = (
         args.discriminator_noise_checkpoint_path
-        if args.add_noise and args.discriminator_noise_checkpoint_path
+        if args.discriminator_noise_checkpoint_path is not None
         else args.discriminator_checkpoint_path
     )
     if gen_ckpt_path is None or disc_ckpt_path is None:
@@ -366,8 +366,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=str, default="evaluations/gan")
 
     # GAN-specific options
-    parser.add_argument("--generator-checkpoint-path", type=str, required=True)
-    parser.add_argument("--discriminator-checkpoint-path", type=str, required=True)
+    parser.add_argument("--generator-checkpoint-path", type=str, default=None)
+    parser.add_argument("--discriminator-checkpoint-path", type=str, default=None)
     parser.add_argument("--generator-noise-checkpoint-path", type=str, default=None)
     parser.add_argument("--discriminator-noise-checkpoint-path", type=str, default=None)
     parser.add_argument("--gan-g-lr", type=float, default=2e-4)

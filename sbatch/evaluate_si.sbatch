@@ -19,7 +19,7 @@ python evaluate_si.py \
   --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
   --velocity-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER}/velocity_final \
   --score-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER}/score_final \
-  --output-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/si/run_${RUN_NUMBER} \
+  --output-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/si/${TYPE}/run_${RUN_NUMBER} \
   --field-name="${TYPE} Field" \
   --batch-size=64 \
   --img-channels=1 \

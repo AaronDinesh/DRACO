@@ -17,11 +17,9 @@ python evaluate_gan.py \
   --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
   --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy \
   --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
-  --generator-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER}/Final_Generator \
-  --discriminator-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER}/Final_Discriminator \
   --generator-noise-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/with_noise/run_${RUN_NUMBER}/Final_Generator \
   --discriminator-noise-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/with_noise/run_${RUN_NUMBER}/Final_Discriminator \
-  --output-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/gan_noise/run_${RUN_NUMBER} \
+  --output-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/gan/${TYPE}/with_noise/run_${RUN_NUMBER} \
   --field-name="${TYPE} Field (noise)" \
   --batch-size=64 \
   --img-channels=1 \
