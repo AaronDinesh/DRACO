@@ -20,47 +20,6 @@ from src.typing import Batch
 from src.utils import batch_metrics, make_train_test_loaders, power_spectrum, restore_checkpoint
 
 
-@nnx.jit(static_argnums=(5,))
-def rollout(
-    vel_model: StochasticInterpolantUNet,
-    score_model: StochasticInterpolantUNet,
-    batch: Batch,
-    eval_key: Array,
-    interpolant: LinearInterpolant,
-    eps: float,
-    t_grid: jnp.ndarray,
-    n_save: int,
-    n_likelihood: int,
-) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
-    cosmos = batch["params"]
-    x0 = batch["inputs"]
-    x1 = batch["targets"]
-
-    def _prepare_t(t: jnp.ndarray) -> jnp.ndarray:
-        t = jnp.reshape(t, (t.shape[0],))
-        return t
-
-    def b_fn(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
-        return vel_model(x, cosmos, _prepare_t(t))
-
-    def s_fn(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
-        return score_model(x, cosmos, _prepare_t(t))
-
-    integrator = SDEIntegrator(
-        b=b_fn,
-        s=s_fn,
-        eps=eps,
-        interpolant=interpolant,
-        t_grid=t_grid,
-        n_save=n_save,
-        n_step=t_grid.shape[0] - 1,
-        n_likelihood=n_likelihood,
-    )
-    preds = integrator.forward_rollout(x0, eval_key)
-    metrics = batch_metrics(preds, x1)
-    return metrics, preds
-
-
 def _accumulate(metrics: dict[str, float], batch_metrics: dict[str, float], weight: int):
     for key, value in batch_metrics.items():
         metrics[key] = metrics.get(key, 0.0) + value * weight
@@ -214,17 +173,29 @@ def evaluate(args: argparse.Namespace) -> None:
         for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating SI", unit="batch"):
             batch_size = int(batch["inputs"].shape[0])
             data_key, rollout_key = random.split(data_key)
-            si_metrics, si_preds = rollout(
-                vel_model,
-                score_model,
-                batch,
-                rollout_key,
-                interpolant,
-                args.eps,
-                t_grid,
-                args.n_save,
-                args.n_likelihood,
+            cosmos = batch["params"]
+
+            def _prepare_t(t: jnp.ndarray) -> jnp.ndarray:
+                return jnp.reshape(t, (t.shape[0],))
+
+            def b_fn(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+                return vel_model(x, cosmos, _prepare_t(t))
+
+            def s_fn(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+                return score_model(x, cosmos, _prepare_t(t))
+
+            integrator = SDEIntegrator(
+                b=b_fn,
+                s=s_fn,
+                eps=args.eps,
+                interpolant=interpolant,
+                t_grid=t_grid,
+                n_save=args.n_save,
+                n_step=t_grid.shape[0] - 1,
+                n_likelihood=args.n_likelihood,
             )
+            si_preds = integrator.forward_rollout(batch["inputs"], rollout_key)
+            si_metrics = batch_metrics(si_preds, batch["targets"])
             si_log = _to_float_dict(si_metrics)
 
             _accumulate(si_metrics_sum, si_log, batch_size)
