@@ -20,10 +20,11 @@ def main():
     parser.add_argument(
         "--transform",
         type=str,
-        default="signed_log1p",
+        default="log10",
         help="Transform to apply to the images.",
     )
     parser.add_argument("--scale", type=float, default=1.0, help="Scale for the transform.")
+    parser.add_argument("--n", type=int, default=5)
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -40,7 +41,10 @@ def main():
 
     transform, _ = make_transform(args.transform, scale=args.scale)
 
-    for i, slice_2d in tqdm(enumerate(data), desc="Processing Images...", total=data.shape[0]):
+    for i, slice_2d in tqdm(enumerate(data), desc="Processing Images...", total=args.n):
+        if i > args.n:
+            break
+
         # Apply the transform
         transformed_slice = transform(slice_2d)
         # Normalize to 0-255 for image saving
@@ -55,7 +59,7 @@ def main():
         output_path = args.output_dir / f"{args.input_file.stem}_slice_{i:04d}.png"
         img.save(output_path)
 
-    print(f"Saved {len(data)} images to {args.output_dir}")
+    print(f"Saved {args.n} images to {args.output_dir}")
 
 
 if __name__ == "__main__":

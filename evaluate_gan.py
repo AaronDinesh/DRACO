@@ -17,7 +17,6 @@ from tqdm import tqdm
 
 from GAN_train import make_train_test_loaders
 from src import Discriminator, Generator
-from src.interpolants import LinearInterpolant, SDEIntegrator, StochasticInterpolantUNet, make_gamma
 from src.typing import Batch
 from src.utils import batch_metrics, power_spectrum, restore_checkpoint
 
@@ -89,47 +88,6 @@ def gan_eval_step(
     }
 
 
-@nnx.jit(static_argnums=(5,))
-def rollout(
-    vel_model: StochasticInterpolantUNet,
-    score_model: StochasticInterpolantUNet,
-    batch: Batch,
-    eval_key: Array,
-    interpolant: LinearInterpolant,
-    eps: float,
-    t_grid: jnp.ndarray,
-    n_save: int,
-    n_likelihood: int,
-) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
-    cosmos = batch["params"]
-    x0 = batch["inputs"]
-    x1 = batch["targets"]
-
-    def _prepare_t(t: jnp.ndarray) -> jnp.ndarray:
-        t = jnp.reshape(t, (t.shape[0],))
-        return t
-
-    def b_fn(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
-        return vel_model(x, cosmos, _prepare_t(t))
-
-    def s_fn(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
-        return score_model(x, cosmos, _prepare_t(t))
-
-    integrator = SDEIntegrator(
-        b=b_fn,
-        s=s_fn,
-        eps=eps,
-        interpolant=interpolant,
-        t_grid=t_grid,
-        n_save=n_save,
-        n_step=t_grid.shape[0] - 1,
-        n_likelihood=n_likelihood,
-    )
-    preds = integrator.forward_rollout(x0, eval_key)
-    metrics = batch_metrics(preds, x1)
-    return metrics, preds
-
-
 @jax.jit
 def _append_noise_channel(inputs: jnp.ndarray, key: Array) -> jnp.ndarray:
     sigma = 0.5
@@ -173,22 +131,20 @@ def _spectrum_mse(pred: np.ndarray, target: np.ndarray) -> float:
 def _plot_and_save_power_spectrum(
     target: jnp.ndarray,
     gan_pred: jnp.ndarray,
-    si_pred: jnp.ndarray,
     bins: int,
     sample_idx: int,
     spectra_dir: Path,
     field_name: str,
-) -> tuple[float, float]:
+) -> float:
     curves = {
         "Target": _power_spectrum_curve(target, bins),
         "GAN": _power_spectrum_curve(gan_pred, bins),
-        "SI": _power_spectrum_curve(si_pred, bins),
     }
 
     fig, ax = plt.subplots(figsize=(6, 4))
     for label, (k_vals, pk_vals) in curves.items():
         ax.loglog(k_vals, pk_vals, label=label)
-    ax.set_title(f"Power Spectrum Comparison ({field_name}) Sample {sample_idx:05d}")
+    ax.set_title(f"GAN Power Spectrum ({field_name}) Sample {sample_idx:05d}")
     ax.set_xlabel("Wave number k [h/Mpc]")
     ax.set_ylabel("P(k)")
     ax.legend()
@@ -198,8 +154,7 @@ def _plot_and_save_power_spectrum(
     plt.close(fig)
 
     gan_mse = _spectrum_mse(curves["GAN"][1], curves["Target"][1])
-    si_mse = _spectrum_mse(curves["SI"][1], curves["Target"][1])
-    return gan_mse, si_mse
+    return gan_mse
 
 
 def evaluate(args: argparse.Namespace) -> None:
@@ -210,14 +165,8 @@ def evaluate(args: argparse.Namespace) -> None:
     spectra_dir.mkdir(parents=True, exist_ok=True)
 
     master_key = random.key(args.seed)
-    (
-        gan_gen_key,
-        gan_disc_key,
-        si_vel_key,
-        si_score_key,
-        data_key,
-        train_test_key,
-    ) = random.split(master_key, 6)
+    gan_gen_key, gan_disc_key, data_key, train_test_key = random.split(master_key, 4)
+    base_train_test_key = train_test_key
 
     (
         _train_loader,
@@ -287,39 +236,6 @@ def evaluate(args: argparse.Namespace) -> None:
     del opt_gen
     del opt_disc
 
-    vel_model = StochasticInterpolantUNet(
-        key=si_vel_key,
-        in_features=args.img_channels,
-        out_features=args.img_channels,
-        len_cosmos_params=cosmos_params_len,
-        time_embed_dim=args.time_embed_dim,
-    )
-    score_model = StochasticInterpolantUNet(
-        key=si_score_key,
-        in_features=args.img_channels,
-        out_features=args.img_channels,
-        len_cosmos_params=cosmos_params_len,
-        time_embed_dim=args.time_embed_dim,
-    )
-    vel_opt = nnx.Optimizer(
-        vel_model,
-        optax.adam(args.si_vel_lr, b1=args.si_beta1, b2=args.si_beta2),
-        wrt=nnx.Param,
-    )
-    score_opt = nnx.Optimizer(
-        score_model,
-        optax.adam(args.si_score_lr, b1=args.si_beta1, b2=args.si_beta2),
-        wrt=nnx.Param,
-    )
-    vel_ckpt = restore_checkpoint(args.velocity_checkpoint_path, vel_model, vel_opt)
-    if stored_data_stats is None and vel_ckpt.get("data_stats") is not None:
-        stored_data_stats = vel_ckpt["data_stats"]
-    score_ckpt = restore_checkpoint(args.score_checkpoint_path, score_model, score_opt)
-    if stored_data_stats is None and score_ckpt.get("data_stats") is not None:
-        stored_data_stats = score_ckpt["data_stats"]
-    del vel_opt
-    del score_opt
-
     if stored_data_stats is not None:
         mu_override = stored_data_stats.get("cosmos_params_mu")
         sigma_override = stored_data_stats.get("cosmos_params_sigma")
@@ -334,7 +250,7 @@ def evaluate(args: argparse.Namespace) -> None:
                 _cosmos_mu,
                 _cosmos_sigma,
             ) = make_train_test_loaders(
-                key=train_test_key,
+                key=base_train_test_key,
                 batch_size=args.batch_size,
                 input_data_path=args.input_maps,
                 output_data_path=args.output_maps,
@@ -345,28 +261,14 @@ def evaluate(args: argparse.Namespace) -> None:
                 sigma_override=sigma_override,
             )
 
-    t_grid = jnp.linspace(args.t_min, args.t_max, args.integrator_steps + 1)
-    interpolant = LinearInterpolant(
-        alpha=lambda t: 1.0 - t,
-        beta=lambda t: t,
-        t_schedule="linear",
-        gamma_type=args.gamma_type,
-    )
-    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(gamma_type=args.gamma_type, a=args.gamma_a)
-    interpolant.gamma = gamma_fn
-    interpolant.gamma_dot = gamma_dot_fn
-    interpolant.gg_dot = gg_dot_fn
-
     total_steps = max(1, math.ceil(n_test / args.batch_size))
     total_weight = 0
     sample_idx = 0
     gan_metrics_sum: dict[str, float] = {}
-    si_metrics_sum: dict[str, float] = {}
     gan_power_error = 0.0
-    si_power_error = 0.0
 
     eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
-    for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating models", unit="batch"):
+    for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating GAN", unit="batch"):
         batch_size = int(batch["inputs"].shape[0])
         noise_key = None
         if args.add_noise:
@@ -379,69 +281,46 @@ def evaluate(args: argparse.Namespace) -> None:
         recon_metrics = batch_metrics(fake_images, batch["targets"])
         gan_log = {**_to_float_dict(gan_metrics), **_to_float_dict(recon_metrics)}
 
-        data_key, rollout_key = random.split(data_key)
-        si_metrics, si_preds = rollout(
-            vel_model,
-            score_model,
-            batch,
-            rollout_key,
-            interpolant,
-            args.eps,
-            t_grid,
-            args.n_save,
-            args.n_likelihood,
-        )
-        si_log = _to_float_dict(si_metrics)
-
         _accumulate(gan_metrics_sum, gan_log, batch_size)
-        _accumulate(si_metrics_sum, si_log, batch_size)
         total_weight += batch_size
 
         for offset in range(batch_size):
-            gan_mse, si_mse = _plot_and_save_power_spectrum(
+            gan_mse = _plot_and_save_power_spectrum(
                 target=batch["targets"][offset],
                 gan_pred=fake_images[offset],
-                si_pred=si_preds[offset],
                 bins=args.power_spectrum_bins,
                 sample_idx=sample_idx + offset,
                 spectra_dir=spectra_dir,
                 field_name=args.field_name,
             )
             gan_power_error += gan_mse
-            si_power_error += si_mse
         sample_idx += batch_size
 
     if total_weight == 0:
         raise RuntimeError("Evaluation dataset is empty")
 
     gan_metrics_avg = {k: v / total_weight for k, v in gan_metrics_sum.items()}
-    si_metrics_avg = {k: v / total_weight for k, v in si_metrics_sum.items()}
     divisor = max(sample_idx, 1)
     gan_metrics_avg["power_spectrum_mse"] = gan_power_error / divisor
-    si_metrics_avg["power_spectrum_mse"] = si_power_error / divisor
 
-    results = {"gan": gan_metrics_avg, "si": si_metrics_avg}
+    results = {"gan": gan_metrics_avg}
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "metrics.json"
     with metrics_path.open("w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
-    print("Evaluation complete. Aggregated metrics:")
-    for section, metrics in results.items():
-        print(f"[{section.upper()}]")
-        for key, value in metrics.items():
-            print(f"  {key}: {value:.6f}")
+    print("GAN evaluation complete. Aggregated metrics:")
+    for key, value in gan_metrics_avg.items():
+        print(f"  {key}: {value:.6f}")
     print(f"Saved per-sample power spectra to {spectra_dir}")
     print(f"Metrics JSON saved to {metrics_path}")
 
     del discriminator
     del generator
-    del vel_model
-    del score_model
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser("Combined GAN and SI Evaluation")
+    parser = argparse.ArgumentParser("GAN Evaluation")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--input-maps", type=str, required=True)
     parser.add_argument("--output-maps", type=str, required=True)
@@ -453,7 +332,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--field-name", type=str, default="Field")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--add-noise", action="store_true")
-    parser.add_argument("--output-dir", type=str, default="evaluations/combined")
+    parser.add_argument("--output-dir", type=str, default="evaluations/gan")
 
     # GAN-specific options
     parser.add_argument("--generator-checkpoint-path", type=str, required=True)
@@ -465,23 +344,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gan-beta1", type=float, default=0.5)
     parser.add_argument("--gan-beta2", type=float, default=0.999)
     parser.add_argument("--l1-lambda", type=float, default=100.0)
-
-    # SI-specific options
-    parser.add_argument("--velocity-checkpoint-path", type=str, required=True)
-    parser.add_argument("--score-checkpoint-path", type=str, required=True)
-    parser.add_argument("--si-vel-lr", type=float, default=2e-4)
-    parser.add_argument("--si-score-lr", type=float, default=2e-4)
-    parser.add_argument("--si-beta1", type=float, default=0.9)
-    parser.add_argument("--si-beta2", type=float, default=0.999)
-    parser.add_argument("--t-min", type=float, default=1e-3)
-    parser.add_argument("--t-max", type=float, default=1.0 - 1e-3)
-    parser.add_argument("--gamma-type", type=str, default="brownian")
-    parser.add_argument("--gamma-a", type=float, default=1.0)
-    parser.add_argument("--eps", type=float, default=1e-2)
-    parser.add_argument("--integrator-steps", type=int, default=500)
-    parser.add_argument("--n-save", type=int, default=4)
-    parser.add_argument("--n-likelihood", type=int, default=1)
-    parser.add_argument("--time-embed-dim", type=int, default=256)
 
     return parser.parse_args()
 
