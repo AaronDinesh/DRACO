@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import math
 from pathlib import Path
@@ -93,7 +94,7 @@ def _plot_and_save_power_spectrum(
     sample_idx: int,
     spectra_dir: Path,
     field_name: str,
-) -> float:
+) -> tuple[float, Path]:
     curves = {
         "Target": _power_spectrum_curve(target, bins),
         "SI": _power_spectrum_curve(si_pred, bins),
@@ -112,7 +113,7 @@ def _plot_and_save_power_spectrum(
     plt.close(fig)
 
     si_mse = _spectrum_mse(curves["SI"][1], curves["Target"][1])
-    return si_mse
+    return si_mse, save_path
 
 
 def evaluate(args: argparse.Namespace) -> None:
@@ -133,8 +134,8 @@ def evaluate(args: argparse.Namespace) -> None:
         n_test,
         _img_size,
         cosmos_params_len,
-        _cosmos_mu,
-        _cosmos_sigma,
+        cosmos_mu,
+        cosmos_sigma,
     ) = make_train_test_loaders(
         key=train_test_key,
         batch_size=args.batch_size,
@@ -190,8 +191,8 @@ def evaluate(args: argparse.Namespace) -> None:
                 n_test,
                 _img_size,
                 cosmos_params_len,
-                _cosmos_mu,
-                _cosmos_sigma,
+                cosmos_mu,
+                cosmos_sigma,
             ) = make_train_test_loaders(
                 key=base_train_test_key,
                 batch_size=args.batch_size,
@@ -223,39 +224,56 @@ def evaluate(args: argparse.Namespace) -> None:
     si_power_error = 0.0
 
     eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
-    sample_pbar = tqdm(total=n_test, desc="SI power spectra", unit="sample")
-    for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating SI", unit="batch"):
-        batch_size = int(batch["inputs"].shape[0])
-        data_key, rollout_key = random.split(data_key)
-        si_metrics, si_preds = rollout(
-            vel_model,
-            score_model,
-            batch,
-            rollout_key,
-            interpolant,
-            args.eps,
-            t_grid,
-            args.n_save,
-            args.n_likelihood,
-        )
-        si_log = _to_float_dict(si_metrics)
+    metadata_path = output_dir / "power_spectra_metadata.csv"
+    with metadata_path.open("w", newline="", encoding="utf-8") as metadata_file:
+        writer = csv.writer(metadata_file)
+        header = ["sample_idx", "plot_path"] + [
+            f"cosmo_param_{i}" for i in range(cosmos_params_len)
+        ]
+        writer.writerow(header)
 
-        _accumulate(si_metrics_sum, si_log, batch_size)
-        total_weight += batch_size
-
-        for offset in range(batch_size):
-            si_mse = _plot_and_save_power_spectrum(
-                target=batch["targets"][offset],
-                si_pred=si_preds[offset],
-                bins=args.power_spectrum_bins,
-                sample_idx=sample_idx + offset,
-                spectra_dir=spectra_dir,
-                field_name=args.field_name,
+        sample_pbar = tqdm(total=n_test, desc="SI power spectra", unit="sample")
+        for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating SI", unit="batch"):
+            batch_size = int(batch["inputs"].shape[0])
+            data_key, rollout_key = random.split(data_key)
+            si_metrics, si_preds = rollout(
+                vel_model,
+                score_model,
+                batch,
+                rollout_key,
+                interpolant,
+                args.eps,
+                t_grid,
+                args.n_save,
+                args.n_likelihood,
             )
-            si_power_error += si_mse
-        sample_idx += batch_size
-        sample_pbar.update(batch_size)
-    sample_pbar.close()
+            si_log = _to_float_dict(si_metrics)
+
+            _accumulate(si_metrics_sum, si_log, batch_size)
+            total_weight += batch_size
+
+            cosmos_params_denorm = np.asarray(
+                jax.device_get(batch["params"] * cosmos_sigma + cosmos_mu)
+            )
+
+            for offset in range(batch_size):
+                si_mse, plot_path = _plot_and_save_power_spectrum(
+                    target=batch["targets"][offset],
+                    si_pred=si_preds[offset],
+                    bins=args.power_spectrum_bins,
+                    sample_idx=sample_idx + offset,
+                    spectra_dir=spectra_dir,
+                    field_name=args.field_name,
+                )
+                si_power_error += si_mse
+                writer.writerow([
+                    sample_idx + offset,
+                    str(plot_path.relative_to(output_dir)),
+                    *cosmos_params_denorm[offset].tolist(),
+                ])
+            sample_idx += batch_size
+            sample_pbar.update(batch_size)
+        sample_pbar.close()
 
     if total_weight == 0:
         raise RuntimeError("Evaluation dataset is empty")
@@ -275,6 +293,7 @@ def evaluate(args: argparse.Namespace) -> None:
         print(f"  {key}: {value:.6f}")
     print(f"Saved per-sample power spectra to {spectra_dir}")
     print(f"Metrics JSON saved to {metrics_path}")
+    print(f"Power spectrum metadata CSV saved to {metadata_path}")
 
     del vel_model
     del score_model

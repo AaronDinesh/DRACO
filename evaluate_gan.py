@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import math
 from pathlib import Path
@@ -135,7 +136,7 @@ def _plot_and_save_power_spectrum(
     sample_idx: int,
     spectra_dir: Path,
     field_name: str,
-) -> float:
+) -> tuple[float, Path]:
     curves = {
         "Target": _power_spectrum_curve(target, bins),
         "GAN": _power_spectrum_curve(gan_pred, bins),
@@ -154,7 +155,7 @@ def _plot_and_save_power_spectrum(
     plt.close(fig)
 
     gan_mse = _spectrum_mse(curves["GAN"][1], curves["Target"][1])
-    return gan_mse
+    return gan_mse, save_path
 
 
 def evaluate(args: argparse.Namespace) -> None:
@@ -175,8 +176,8 @@ def evaluate(args: argparse.Namespace) -> None:
         n_test,
         _img_size,
         cosmos_params_len,
-        _cosmos_mu,
-        _cosmos_sigma,
+        cosmos_mu,
+        cosmos_sigma,
     ) = make_train_test_loaders(
         key=train_test_key,
         batch_size=args.batch_size,
@@ -247,8 +248,8 @@ def evaluate(args: argparse.Namespace) -> None:
                 n_test,
                 _img_size,
                 cosmos_params_len,
-                _cosmos_mu,
-                _cosmos_sigma,
+                cosmos_mu,
+                cosmos_sigma,
             ) = make_train_test_loaders(
                 key=base_train_test_key,
                 batch_size=args.batch_size,
@@ -268,36 +269,55 @@ def evaluate(args: argparse.Namespace) -> None:
     gan_power_error = 0.0
 
     eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
-    sample_pbar = tqdm(total=n_test, desc="GAN power spectra", unit="sample")
-    for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating GAN", unit="batch"):
-        batch_size = int(batch["inputs"].shape[0])
-        noise_key = None
-        if args.add_noise:
-            data_key, noise_key = random.split(data_key)
-        gan_inputs = _maybe_add_noise(batch["inputs"], args.add_noise, noise_key)
-        gan_batch = {**batch, "inputs": gan_inputs}
+    metadata_path = output_dir / "power_spectra_metadata.csv"
+    with metadata_path.open("w", newline="", encoding="utf-8") as metadata_file:
+        writer = csv.writer(metadata_file)
+        header = ["sample_idx", "plot_path"] + [
+            f"cosmo_param_{i}" for i in range(cosmos_params_len)
+        ]
+        writer.writerow(header)
 
-        gan_metrics = gan_eval_step(discriminator, generator, gan_batch, l1_lambda=args.l1_lambda)
-        fake_images = gan_metrics.pop("sample_fake")
-        recon_metrics = batch_metrics(fake_images, batch["targets"])
-        gan_log = {**_to_float_dict(gan_metrics), **_to_float_dict(recon_metrics)}
+        sample_pbar = tqdm(total=n_test, desc="GAN power spectra", unit="sample")
+        for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating GAN", unit="batch"):
+            batch_size = int(batch["inputs"].shape[0])
+            noise_key = None
+            if args.add_noise:
+                data_key, noise_key = random.split(data_key)
+            gan_inputs = _maybe_add_noise(batch["inputs"], args.add_noise, noise_key)
+            gan_batch = {**batch, "inputs": gan_inputs}
 
-        _accumulate(gan_metrics_sum, gan_log, batch_size)
-        total_weight += batch_size
-
-        for offset in range(batch_size):
-            gan_mse = _plot_and_save_power_spectrum(
-                target=batch["targets"][offset],
-                gan_pred=fake_images[offset],
-                bins=args.power_spectrum_bins,
-                sample_idx=sample_idx + offset,
-                spectra_dir=spectra_dir,
-                field_name=args.field_name,
+            gan_metrics = gan_eval_step(
+                discriminator, generator, gan_batch, l1_lambda=args.l1_lambda
             )
-            gan_power_error += gan_mse
-        sample_idx += batch_size
-        sample_pbar.update(batch_size)
-    sample_pbar.close()
+            fake_images = gan_metrics.pop("sample_fake")
+            recon_metrics = batch_metrics(fake_images, batch["targets"])
+            gan_log = {**_to_float_dict(gan_metrics), **_to_float_dict(recon_metrics)}
+
+            _accumulate(gan_metrics_sum, gan_log, batch_size)
+            total_weight += batch_size
+
+            cosmos_params_denorm = np.asarray(
+                jax.device_get(batch["params"] * cosmos_sigma + cosmos_mu)
+            )
+
+            for offset in range(batch_size):
+                gan_mse, plot_path = _plot_and_save_power_spectrum(
+                    target=batch["targets"][offset],
+                    gan_pred=fake_images[offset],
+                    bins=args.power_spectrum_bins,
+                    sample_idx=sample_idx + offset,
+                    spectra_dir=spectra_dir,
+                    field_name=args.field_name,
+                )
+                gan_power_error += gan_mse
+                writer.writerow([
+                    sample_idx + offset,
+                    str(plot_path.relative_to(output_dir)),
+                    *cosmos_params_denorm[offset].tolist(),
+                ])
+            sample_idx += batch_size
+            sample_pbar.update(batch_size)
+        sample_pbar.close()
 
     if total_weight == 0:
         raise RuntimeError("Evaluation dataset is empty")
@@ -317,6 +337,7 @@ def evaluate(args: argparse.Namespace) -> None:
         print(f"  {key}: {value:.6f}")
     print(f"Saved per-sample power spectra to {spectra_dir}")
     print(f"Metrics JSON saved to {metrics_path}")
+    print(f"Power spectrum metadata CSV saved to {metadata_path}")
 
     del discriminator
     del generator
