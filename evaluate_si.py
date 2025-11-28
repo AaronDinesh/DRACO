@@ -223,6 +223,7 @@ def evaluate(args: argparse.Namespace) -> None:
     si_power_error = 0.0
 
     eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
+    sample_pbar = tqdm(total=n_test, desc="SI power spectra", unit="sample")
     for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating SI", unit="batch"):
         batch_size = int(batch["inputs"].shape[0])
         data_key, rollout_key = random.split(data_key)
@@ -253,6 +254,8 @@ def evaluate(args: argparse.Namespace) -> None:
             )
             si_power_error += si_mse
         sample_idx += batch_size
+        sample_pbar.update(batch_size)
+    sample_pbar.close()
 
     if total_weight == 0:
         raise RuntimeError("Evaluation dataset is empty")
