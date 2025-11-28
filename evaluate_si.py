@@ -8,7 +8,6 @@ from typing import Iterable
 import jax
 import jax.numpy as jnp
 import jax.random as random
-import matplotlib.pyplot as plt
 import numpy as np
 import optax
 from dotenv import load_dotenv
@@ -87,41 +86,11 @@ def _spectrum_mse(pred: np.ndarray, target: np.ndarray) -> float:
     return float(np.mean(np.square(diff)))
 
 
-def _plot_and_save_power_spectrum(
-    target: jnp.ndarray,
-    si_pred: jnp.ndarray,
-    bins: int,
-    sample_idx: int,
-    spectra_dir: Path,
-    field_name: str,
-) -> tuple[float, Path]:
-    curves = {
-        "Target": _power_spectrum_curve(target, bins),
-        "SI": _power_spectrum_curve(si_pred, bins),
-    }
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    for label, (k_vals, pk_vals) in curves.items():
-        ax.loglog(k_vals, pk_vals, label=label)
-    ax.set_title(f"SI Power Spectrum ({field_name}) Sample {sample_idx:05d}")
-    ax.set_xlabel("Wave number k [h/Mpc]")
-    ax.set_ylabel("P(k)")
-    ax.legend()
-    fig.tight_layout()
-    save_path = spectra_dir / f"sample_{sample_idx:05d}.png"
-    fig.savefig(save_path, dpi=150)
-    plt.close(fig)
-
-    si_mse = _spectrum_mse(curves["SI"][1], curves["Target"][1])
-    return si_mse, save_path
-
-
 def evaluate(args: argparse.Namespace) -> None:
     _ = load_dotenv()
 
     output_dir = Path(args.output_dir)
-    spectra_dir = output_dir / "power_spectra"
-    spectra_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     master_key = random.key(args.seed)
     si_vel_key, si_score_key, data_key, train_test_key = random.split(master_key, 4)
@@ -222,12 +191,21 @@ def evaluate(args: argparse.Namespace) -> None:
     sample_idx = 0
     si_metrics_sum: dict[str, float] = {}
     si_power_error = 0.0
+    spectra_k_ref: np.ndarray | None = None
+    target_pk_mem: np.memmap | None = None
+    si_pk_mem: np.memmap | None = None
+    cosmos_mem = np.memmap(
+        output_dir / "cosmos_params.npy",
+        mode="w+",
+        dtype=np.float32,
+        shape=(n_test, cosmos_params_len),
+    )
 
     eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
     metadata_path = output_dir / "power_spectra_metadata.csv"
     with metadata_path.open("w", newline="", encoding="utf-8") as metadata_file:
         writer = csv.writer(metadata_file)
-        header = ["sample_idx", "plot_path"] + [
+        header = ["sample_idx", "spectra_row"] + [
             f"cosmo_param_{i}" for i in range(cosmos_params_len)
         ]
         writer.writerow(header)
@@ -257,20 +235,40 @@ def evaluate(args: argparse.Namespace) -> None:
             )
 
             for offset in range(batch_size):
-                si_mse, plot_path = _plot_and_save_power_spectrum(
-                    target=batch["targets"][offset],
-                    si_pred=si_preds[offset],
-                    bins=args.power_spectrum_bins,
-                    sample_idx=sample_idx + offset,
-                    spectra_dir=spectra_dir,
-                    field_name=args.field_name,
+                k_target, pk_target = _power_spectrum_curve(
+                    batch["targets"][offset], args.power_spectrum_bins
                 )
+                k_pred, pk_pred = _power_spectrum_curve(si_preds[offset], args.power_spectrum_bins)
+
+                if spectra_k_ref is None:
+                    spectra_k_ref = k_target
+                    k_len = len(k_target)
+                    target_pk_mem = np.memmap(
+                        output_dir / "target_pk.npy",
+                        mode="w+",
+                        dtype=np.float32,
+                        shape=(n_test, k_len),
+                    )
+                    si_pk_mem = np.memmap(
+                        output_dir / "si_pk.npy",
+                        mode="w+",
+                        dtype=np.float32,
+                        shape=(n_test, k_len),
+                    )
+                    np.save(output_dir / "k_vals.npy", spectra_k_ref)
+                elif len(k_target) != len(spectra_k_ref):
+                    raise ValueError("Inconsistent k-binning encountered across samples.")
+                if len(k_pred) != len(spectra_k_ref):
+                    raise ValueError("Predicted spectrum k-binning differs from reference.")
+
+                si_mse = _spectrum_mse(pk_pred, pk_target)
                 si_power_error += si_mse
-                writer.writerow([
-                    sample_idx + offset,
-                    str(plot_path.relative_to(output_dir)),
-                    *cosmos_params_denorm[offset].tolist(),
-                ])
+
+                row = sample_idx + offset
+                cosmos_mem[row] = cosmos_params_denorm[offset]
+                target_pk_mem[row] = pk_target  # type: ignore[arg-type]
+                si_pk_mem[row] = pk_pred  # type: ignore[arg-type]
+                writer.writerow([row, row, *cosmos_params_denorm[offset].tolist()])
             sample_idx += batch_size
             sample_pbar.update(batch_size)
         sample_pbar.close()
@@ -283,16 +281,23 @@ def evaluate(args: argparse.Namespace) -> None:
     si_metrics_avg["power_spectrum_mse"] = si_power_error / divisor
 
     results = {"si": si_metrics_avg}
-    output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "metrics.json"
     with metrics_path.open("w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
+    if target_pk_mem is not None:
+        target_pk_mem.flush()
+    if si_pk_mem is not None:
+        si_pk_mem.flush()
+    cosmos_mem.flush()
 
     print("SI evaluation complete. Aggregated metrics:")
     for key, value in si_metrics_avg.items():
         print(f"  {key}: {value:.6f}")
-    print(f"Saved per-sample power spectra to {spectra_dir}")
     print(f"Metrics JSON saved to {metrics_path}")
+    print(f"Saved k values to {output_dir / 'k_vals.npy'}")
+    print(f"Saved target spectra to {output_dir / 'target_pk.npy'}")
+    print(f"Saved SI spectra to {output_dir / 'si_pk.npy'}")
+    print(f"Saved cosmological parameters to {output_dir / 'cosmos_params.npy'}")
     print(f"Power spectrum metadata CSV saved to {metadata_path}")
 
     del vel_model
