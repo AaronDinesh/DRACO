@@ -16,12 +16,24 @@ from jax._src.typing import Array
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from src.interpolants import LinearInterpolant, SDEIntegrator, StochasticInterpolantUNet, make_gamma
+from src.interpolants import (
+    LinearInterpolant,
+    SDEIntegrator,
+    StochasticInterpolantUNet,
+    make_gamma,
+)
 from src.typing import Batch
-from src.utils import batch_metrics, make_train_test_loaders, power_spectrum, restore_checkpoint
+from src.utils import (
+    batch_metrics,
+    make_train_test_loaders,
+    power_spectrum,
+    restore_checkpoint,
+)
 
 
-def _accumulate(metrics: dict[str, float], batch_metrics: dict[str, float], weight: int):
+def _accumulate(
+    metrics: dict[str, float], batch_metrics: dict[str, float], weight: int
+):
     for key, value in batch_metrics.items():
         metrics[key] = metrics.get(key, 0.0) + value * weight
 
@@ -30,7 +42,9 @@ def _to_float_dict(metrics: dict[str, jnp.ndarray | float]) -> dict[str, float]:
     return {k: float(jax.device_get(v)) for k, v in metrics.items()}
 
 
-def _power_spectrum_curve(field: jnp.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
+def _power_spectrum_curve(
+    field: jnp.ndarray, bins: int
+) -> tuple[np.ndarray, np.ndarray]:
     mesh = field
     if mesh.ndim == 3 and mesh.shape[-1] == 1:
         mesh = mesh[..., 0]
@@ -142,7 +156,9 @@ def evaluate(args: argparse.Namespace) -> None:
         t_schedule="linear",
         gamma_type=args.gamma_type,
     )
-    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(gamma_type=args.gamma_type, a=args.gamma_a)
+    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(
+        gamma_type=args.gamma_type, a=args.gamma_a
+    )
     interpolant.gamma = gamma_fn
     interpolant.gamma_dot = gamma_dot_fn
     interpolant.gg_dot = gg_dot_fn
@@ -175,7 +191,7 @@ def evaluate(args: argparse.Namespace) -> None:
         pred_images_dir.mkdir(parents=True, exist_ok=True)
     if trace_only:
         trace_base = Path(args.trace_dir) if args.trace_dir is not None else output_dir
-        trace_dir = trace_base / f"trace_sample_{args.trace_sample_idx:05d}"
+        trace_dir = trace_base / f"sample_{args.trace_sample_idx:05d}"
         trace_target_dir = trace_dir / "target"
         trace_pred_dir = trace_dir / "pred_steps"
         trace_target_dir.mkdir(parents=True, exist_ok=True)
@@ -191,7 +207,9 @@ def evaluate(args: argparse.Namespace) -> None:
         writer.writerow(header)
 
         sample_pbar = tqdm(total=n_test, desc="SI power spectra", unit="sample")
-        for batch in tqdm(eval_iter, total=total_steps, desc="Evaluating SI", unit="batch"):
+        for batch in tqdm(
+            eval_iter, total=total_steps, desc="Evaluating SI", unit="batch"
+        ):
             batch_size = int(batch["inputs"].shape[0])
             data_key, rollout_key = random.split(data_key)
             cosmos = batch["params"]
@@ -233,7 +251,9 @@ def evaluate(args: argparse.Namespace) -> None:
                 k_target, pk_target = _power_spectrum_curve(
                     batch["targets"][offset], args.power_spectrum_bins
                 )
-                k_pred, pk_pred = _power_spectrum_curve(si_preds[offset], args.power_spectrum_bins)
+                k_pred, pk_pred = _power_spectrum_curve(
+                    si_preds[offset], args.power_spectrum_bins
+                )
 
                 if spectra_k_ref is None:
                     spectra_k_ref = k_target
@@ -252,9 +272,13 @@ def evaluate(args: argparse.Namespace) -> None:
                     )
                     np.save(output_dir / "k_vals.npy", spectra_k_ref)
                 elif len(k_target) != len(spectra_k_ref):
-                    raise ValueError("Inconsistent k-binning encountered across samples.")
+                    raise ValueError(
+                        "Inconsistent k-binning encountered across samples."
+                    )
                 if len(k_pred) != len(spectra_k_ref):
-                    raise ValueError("Predicted spectrum k-binning differs from reference.")
+                    raise ValueError(
+                        "Predicted spectrum k-binning differs from reference."
+                    )
 
                 if not trace_only:
                     si_mse = _spectrum_mse(pk_pred, pk_target)
@@ -280,10 +304,20 @@ def evaluate(args: argparse.Namespace) -> None:
                             else pred_np
                         )
                         plt.imsave(
-                            target_images_dir / f"sample_{row:05d}.png", target_img, cmap="gray"
+                            target_images_dir / f"sample_{row:05d}.png",
+                            target_img,
+                            cmap="gray",
                         )
-                        plt.imsave(pred_images_dir / f"sample_{row:05d}.png", pred_img, cmap="gray")
-                if trace_only and row == args.trace_sample_idx and trace_dir is not None:
+                        plt.imsave(
+                            pred_images_dir / f"sample_{row:05d}.png",
+                            pred_img,
+                            cmap="gray",
+                        )
+                if (
+                    trace_only
+                    and row == args.trace_sample_idx
+                    and trace_dir is not None
+                ):
                     cosmos_single = cosmos[offset : offset + 1]
 
                     def b_fn_single(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
