@@ -16,3 +16,4 @@ wandb/
 logs/
 visualizations/
 core_*
+evaluation_runs/*

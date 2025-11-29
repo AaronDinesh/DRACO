@@ -13,6 +13,7 @@ import optax
 from dotenv import load_dotenv
 from flax import nnx
 from jax._src.typing import Array
+from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from src.interpolants import LinearInterpolant, SDEIntegrator, StochasticInterpolantUNet, make_gamma
@@ -159,6 +160,15 @@ def evaluate(args: argparse.Namespace) -> None:
         dtype=np.float32,
         shape=(n_test, cosmos_params_len),
     )
+    images_dir: Path | None = None
+    target_images_dir: Path | None = None
+    pred_images_dir: Path | None = None
+    if args.save_images:
+        images_dir = output_dir / "images"
+        target_images_dir = images_dir / "target"
+        pred_images_dir = images_dir / "pred"
+        target_images_dir.mkdir(parents=True, exist_ok=True)
+        pred_images_dir.mkdir(parents=True, exist_ok=True)
 
     eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
     metadata_path = output_dir / "power_spectra_metadata.csv"
@@ -240,6 +250,19 @@ def evaluate(args: argparse.Namespace) -> None:
                 target_pk_mem[row] = pk_target  # type: ignore[arg-type]
                 si_pk_mem[row] = pk_pred  # type: ignore[arg-type]
                 writer.writerow([row, row, *cosmos_params_denorm[offset].tolist()])
+                if target_images_dir is not None and pred_images_dir is not None:
+                    target_np = np.asarray(jax.device_get(batch["targets"][offset]))
+                    pred_np = np.asarray(jax.device_get(si_preds[offset]))
+                    target_img = (
+                        target_np[..., 0]
+                        if target_np.ndim == 3 and target_np.shape[-1] == 1
+                        else target_np
+                    )
+                    pred_img = (
+                        pred_np[..., 0] if pred_np.ndim == 3 and pred_np.shape[-1] == 1 else pred_np
+                    )
+                    plt.imsave(target_images_dir / f"sample_{row:05d}.png", target_img, cmap="gray")
+                    plt.imsave(pred_images_dir / f"sample_{row:05d}.png", pred_img, cmap="gray")
             sample_idx += batch_size
             sample_pbar.update(batch_size)
         sample_pbar.close()
@@ -288,6 +311,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--field-name", type=str, default="Field")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output-dir", type=str, default="evaluations/si")
+    parser.add_argument("--save-images", action="store_true")
 
     # SI-specific options
     parser.add_argument("--velocity-checkpoint-path", type=str, required=True)
