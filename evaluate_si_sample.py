@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from flax import nnx
 from jax._src.typing import Array
 from matplotlib import pyplot as plt
+from tqdm import tqdm
 
 from src.interpolants import LinearInterpolant, SDEIntegrator, StochasticInterpolantUNet, make_gamma
 from src.utils import make_train_test_loaders, restore_checkpoint
@@ -134,7 +135,9 @@ def evaluate_single(args: argparse.Namespace) -> None:
     target_inputs = None
     target_targets = None
     target_params = None
-    for idx, batch in enumerate(eval_iter):
+    for idx, batch in enumerate(
+        tqdm(eval_iter, total=n_test, desc="Scanning samples", unit="sample")
+    ):
         if idx == args.sample_idx:
             target_inputs = batch["inputs"]
             target_targets = batch["targets"]
