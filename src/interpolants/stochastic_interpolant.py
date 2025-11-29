@@ -143,3 +143,27 @@ class SDEIntegrator:
         n_step = t_grid.shape[0] - 1
         X, _ = jax.lax.fori_loop(0, n_step, _integrator, (x0, key))
         return X
+
+    def forward_rollout_trace(self, x0: Array, key: Array) -> list[Array]:
+        """
+        Slower, verbose rollout that returns the intermediate states for a single sample.
+        Intended for debugging/visualization; not JIT-compiled.
+        """
+        states: list[Array] = []
+        x = x0
+        k = key
+        t_grid = self.t_grid
+        n_step = t_grid.shape[0] - 1
+
+        for i in range(n_step):
+            states.append(x)
+            k, sub_key = jax.random.split(k)
+
+            t_i = jnp.broadcast_to(t_grid[i], x.shape[:-1] + (1,))
+            t_ip1 = jnp.broadcast_to(t_grid[i + 1], x.shape[:-1] + (1,))
+            dt = t_ip1 - t_i
+
+            x = self.step_forward_heun(x, t_i, sub_key, dt)
+
+        states.append(x)
+        return states

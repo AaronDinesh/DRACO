@@ -51,6 +51,7 @@ def evaluate(args: argparse.Namespace) -> None:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    trace_only = args.trace_sample_idx is not None
 
     master_key = random.key(args.seed)
     si_vel_key, si_score_key, data_key, train_test_key = random.split(master_key, 4)
@@ -163,12 +164,22 @@ def evaluate(args: argparse.Namespace) -> None:
     images_dir: Path | None = None
     target_images_dir: Path | None = None
     pred_images_dir: Path | None = None
+    trace_dir: Path | None = None
+    trace_target_dir: Path | None = None
+    trace_pred_dir: Path | None = None
     if args.save_images:
         images_dir = output_dir / "images"
         target_images_dir = images_dir / "target"
         pred_images_dir = images_dir / "pred"
         target_images_dir.mkdir(parents=True, exist_ok=True)
         pred_images_dir.mkdir(parents=True, exist_ok=True)
+    if trace_only:
+        trace_base = Path(args.trace_dir) if args.trace_dir is not None else output_dir
+        trace_dir = trace_base / f"trace_sample_{args.trace_sample_idx:05d}"
+        trace_target_dir = trace_dir / "target"
+        trace_pred_dir = trace_dir / "pred_steps"
+        trace_target_dir.mkdir(parents=True, exist_ok=True)
+        trace_pred_dir.mkdir(parents=True, exist_ok=True)
 
     eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
     metadata_path = output_dir / "power_spectra_metadata.csv"
@@ -208,8 +219,9 @@ def evaluate(args: argparse.Namespace) -> None:
             si_metrics = batch_metrics(si_preds, batch["targets"])
             si_log = _to_float_dict(si_metrics)
 
-            _accumulate(si_metrics_sum, si_log, batch_size)
-            total_weight += batch_size
+            if not trace_only:
+                _accumulate(si_metrics_sum, si_log, batch_size)
+                total_weight += batch_size
 
             cosmos_params_denorm = np.asarray(
                 jax.device_get(batch["params"] * cosmos_sigma + cosmos_mu)
@@ -242,57 +254,112 @@ def evaluate(args: argparse.Namespace) -> None:
                 if len(k_pred) != len(spectra_k_ref):
                     raise ValueError("Predicted spectrum k-binning differs from reference.")
 
-                si_mse = _spectrum_mse(pk_pred, pk_target)
-                si_power_error += si_mse
+                if not trace_only:
+                    si_mse = _spectrum_mse(pk_pred, pk_target)
+                    si_power_error += si_mse
 
                 row = sample_idx + offset
-                cosmos_mem[row] = cosmos_params_denorm[offset]
-                target_pk_mem[row] = pk_target  # type: ignore[arg-type]
-                si_pk_mem[row] = pk_pred  # type: ignore[arg-type]
-                writer.writerow([row, row, *cosmos_params_denorm[offset].tolist()])
-                if target_images_dir is not None and pred_images_dir is not None:
+                if not trace_only:
+                    cosmos_mem[row] = cosmos_params_denorm[offset]
+                    target_pk_mem[row] = pk_target  # type: ignore[arg-type]
+                    si_pk_mem[row] = pk_pred  # type: ignore[arg-type]
+                    writer.writerow([row, row, *cosmos_params_denorm[offset].tolist()])
+                    if target_images_dir is not None and pred_images_dir is not None:
+                        target_np = np.asarray(jax.device_get(batch["targets"][offset]))
+                        pred_np = np.asarray(jax.device_get(si_preds[offset]))
+                        target_img = (
+                            target_np[..., 0]
+                            if target_np.ndim == 3 and target_np.shape[-1] == 1
+                            else target_np
+                        )
+                        pred_img = (
+                            pred_np[..., 0]
+                            if pred_np.ndim == 3 and pred_np.shape[-1] == 1
+                            else pred_np
+                        )
+                        plt.imsave(
+                            target_images_dir / f"sample_{row:05d}.png", target_img, cmap="gray"
+                        )
+                        plt.imsave(pred_images_dir / f"sample_{row:05d}.png", pred_img, cmap="gray")
+                if trace_only and row == args.trace_sample_idx and trace_dir is not None:
+                    cosmos_single = cosmos[offset : offset + 1]
+
+                    def b_fn_single(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+                        return vel_model(x, cosmos_single, _prepare_t(t))
+
+                    def s_fn_single(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+                        return score_model(x, cosmos_single, _prepare_t(t))
+
+                    trace_integrator = SDEIntegrator(
+                        b=b_fn_single,
+                        s=s_fn_single,
+                        eps=args.eps,
+                        interpolant=interpolant,
+                        t_grid=t_grid,
+                        n_save=args.n_save,
+                        n_step=t_grid.shape[0] - 1,
+                        n_likelihood=args.n_likelihood,
+                    )
+                    trace_states = trace_integrator.forward_rollout_trace(
+                        batch["inputs"][offset : offset + 1], rollout_key
+                    )
+                    for step_idx, state in enumerate(trace_states):
+                        state_np = np.asarray(jax.device_get(state))
+                        state_img = (
+                            state_np[..., 0]
+                            if state_np.ndim == 4 and state_np.shape[-1] == 1
+                            else state_np
+                        )
+                        plt.imsave(
+                            trace_pred_dir / f"step_{step_idx:05d}.png",
+                            state_img[0],
+                            cmap="gray",
+                        )
                     target_np = np.asarray(jax.device_get(batch["targets"][offset]))
-                    pred_np = np.asarray(jax.device_get(si_preds[offset]))
                     target_img = (
                         target_np[..., 0]
                         if target_np.ndim == 3 and target_np.shape[-1] == 1
                         else target_np
                     )
-                    pred_img = (
-                        pred_np[..., 0] if pred_np.ndim == 3 and pred_np.shape[-1] == 1 else pred_np
-                    )
-                    plt.imsave(target_images_dir / f"sample_{row:05d}.png", target_img, cmap="gray")
-                    plt.imsave(pred_images_dir / f"sample_{row:05d}.png", pred_img, cmap="gray")
+                    plt.imsave(trace_target_dir / "target.png", target_img, cmap="gray")
+                    sample_pbar.update(batch_size)
+                    sample_pbar.close()
+                    return
             sample_idx += batch_size
             sample_pbar.update(batch_size)
         sample_pbar.close()
 
-    if total_weight == 0:
+    if not trace_only and total_weight == 0:
         raise RuntimeError("Evaluation dataset is empty")
 
-    si_metrics_avg = {k: v / total_weight for k, v in si_metrics_sum.items()}
-    divisor = max(sample_idx, 1)
-    si_metrics_avg["power_spectrum_mse"] = si_power_error / divisor
+    si_metrics_avg: dict[str, float] = {}
+    if not trace_only:
+        si_metrics_avg = {k: v / total_weight for k, v in si_metrics_sum.items()}
+        divisor = max(sample_idx, 1)
+        si_metrics_avg["power_spectrum_mse"] = si_power_error / divisor
 
-    results = {"si": si_metrics_avg}
-    metrics_path = output_dir / "metrics.json"
-    with metrics_path.open("w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
-    if target_pk_mem is not None:
-        target_pk_mem.flush()
-    if si_pk_mem is not None:
-        si_pk_mem.flush()
-    cosmos_mem.flush()
+    if not trace_only:
+        results = {"si": si_metrics_avg}
+        metrics_path = output_dir / "metrics.json"
+        with metrics_path.open("w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+        if target_pk_mem is not None:
+            target_pk_mem.flush()
+        if si_pk_mem is not None:
+            si_pk_mem.flush()
+        cosmos_mem.flush()
 
-    print("SI evaluation complete. Aggregated metrics:")
-    for key, value in si_metrics_avg.items():
-        print(f"  {key}: {value:.6f}")
-    print(f"Metrics JSON saved to {metrics_path}")
-    print(f"Saved k values to {output_dir / 'k_vals.npy'}")
-    print(f"Saved target spectra to {output_dir / 'target_pk.npy'}")
-    print(f"Saved SI spectra to {output_dir / 'si_pk.npy'}")
-    print(f"Saved cosmological parameters to {output_dir / 'cosmos_params.npy'}")
-    print(f"Power spectrum metadata CSV saved to {metadata_path}")
+        print("SI evaluation complete. Aggregated metrics:")
+        for key, value in si_metrics_avg.items():
+            print(f"  {key}: {value:.6f}")
+        print(f"Metrics JSON saved to {metrics_path}")
+        print(f"Saved k values to {output_dir / 'k_vals.npy'}")
+        print(f"Saved target spectra to {output_dir / 'target_pk.npy'}")
+        print(f"Saved SI spectra to {output_dir / 'si_pk.npy'}")
+        print(f"Saved cosmological parameters to {output_dir / 'cosmos_params.npy'}")
+        print(f"Power spectrum metadata CSV saved to {metadata_path}")
+    else:
+        print(f"Trace for sample {args.trace_sample_idx} saved to {trace_dir}")
 
     del vel_model
     del score_model
@@ -312,6 +379,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output-dir", type=str, default="evaluations/si")
     parser.add_argument("--save-images", action="store_true")
+    parser.add_argument(
+        "--trace-sample-idx",
+        type=int,
+        default=None,
+        help="If set, only run and save a detailed trace for this sample index (0-based).",
+    )
+    parser.add_argument(
+        "--trace-dir",
+        type=str,
+        default=None,
+        help="Optional directory to store trace outputs (default: output-dir/trace_sample_xxxxx).",
+    )
 
     # SI-specific options
     parser.add_argument("--velocity-checkpoint-path", type=str, required=True)
