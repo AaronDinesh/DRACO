@@ -197,7 +197,9 @@ def evaluate(args: argparse.Namespace) -> None:
             cosmos = batch["params"]
 
             def _prepare_t(t: jnp.ndarray) -> jnp.ndarray:
-                return jnp.reshape(t, (t.shape[0],))
+                if t.ndim == 1:
+                    return t
+                return jnp.reshape(t, (t.shape[0], -1))[:, 0]
 
             def b_fn(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
                 return vel_model(x, cosmos, _prepare_t(t))
