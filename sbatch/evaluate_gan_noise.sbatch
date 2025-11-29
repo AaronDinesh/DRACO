@@ -25,4 +25,5 @@ python evaluate_gan.py \
   --img-channels=1 \
   --power-spectrum-bins=64 \
   --test-ratio=0.2 \
-  --add-noise
+  --add-noise \
+  --save-images
