@@ -58,7 +58,7 @@ def evaluate_single(args: argparse.Namespace) -> None:
         _cosmos_sigma,
     ) = make_train_test_loaders(
         key=train_test_key,
-        batch_size=args.batch_size,
+        batch_size=1,  # force single-sample batches for tracing
         input_data_path=args.input_maps,
         output_data_path=args.output_maps,
         csv_path=args.cosmos_params,
@@ -129,21 +129,17 @@ def evaluate_single(args: argparse.Namespace) -> None:
                 sigma_override=sigma_override,
             )
 
-    # Locate the sample batch containing sample_idx
+    # Locate the sample batch containing sample_idx (batch_size is fixed to 1)
     eval_iter = test_loader(key=data_key, drop_last=False)
-    cumulative = 0
     target_inputs = None
     target_targets = None
     target_params = None
-    for batch in eval_iter:
-        bsz = int(batch["inputs"].shape[0])
-        if cumulative <= args.sample_idx < cumulative + bsz:
-            offset = args.sample_idx - cumulative
-            target_inputs = batch["inputs"][offset : offset + 1]
-            target_targets = batch["targets"][offset : offset + 1]
-            target_params = batch["params"][offset : offset + 1]
+    for idx, batch in enumerate(eval_iter):
+        if idx == args.sample_idx:
+            target_inputs = batch["inputs"]
+            target_targets = batch["targets"]
+            target_params = batch["params"]
             break
-        cumulative += bsz
 
     if target_inputs is None:
         raise RuntimeError("Sample index not found in test loader iteration.")
@@ -188,7 +184,7 @@ def evaluate_single(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser("Stochastic Interpolant Single Sample Trace")
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=1, help="Ignored; batch is fixed to 1")
     parser.add_argument("--input-maps", type=str, required=True)
     parser.add_argument("--output-maps", type=str, required=True)
     parser.add_argument("--cosmos-params", type=str, required=True)
