@@ -28,6 +28,5 @@ python evaluate_si.py \
   --n-save=4 \
   --n-likelihood=1 \
   --test-ratio=0.2 \
-  --save-images \
-  --trace-sample-idx=$3 \
+  --sample-idx=$3 \
   --trace-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/si/${TYPE}/run_${RUN_NUMBER}/traced_gen
