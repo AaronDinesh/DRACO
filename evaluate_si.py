@@ -233,6 +233,15 @@ def evaluate(args: argparse.Namespace) -> None:
                 )
                 k_pred, pk_pred = _power_spectrum_curve(si_preds[offset], args.power_spectrum_bins)
 
+                if not np.any(pk_target):
+                    raise AssertionError(
+                        "Target power spectrum is all zeros; check transform/bins/input data."
+                    )
+                if not np.any(pk_pred):
+                    raise AssertionError(
+                        "SI prediction power spectrum is all zeros; check rollout outputs."
+                    )
+
                 if spectra_k_ref is None:
                     spectra_k_ref = k_target
                     k_len = len(k_target)
