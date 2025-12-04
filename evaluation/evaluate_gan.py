@@ -12,11 +12,11 @@ import numpy as np
 import optax
 from dotenv import load_dotenv
 from flax import nnx
+from GAN_train import make_train_test_loaders
 from jax._src.typing import Array
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from GAN_train import make_train_test_loaders
 from src import Discriminator, Generator
 from src.typing import Batch
 from src.utils import batch_metrics, power_spectrum, restore_checkpoint
@@ -256,7 +256,8 @@ def evaluate(args: argparse.Namespace) -> None:
         shape=(n_test, cosmos_params_len),
     )
 
-    eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
+    # Keep test sample ordering fixed so SI and GAN evaluations align one-to-one.
+    eval_iter: Iterable[Batch] = test_loader(key=None, drop_last=False)
     metadata_path = output_dir / "power_spectra_metadata.csv"
     with metadata_path.open("w", newline="", encoding="utf-8") as metadata_file:
         writer = csv.writer(metadata_file)

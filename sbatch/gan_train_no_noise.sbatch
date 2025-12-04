@@ -15,6 +15,18 @@ cd /users/adinesh/DRACO
 # source .venv/bin/activate
 nvidia-smi
 
-python GAN_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt --checkpoint-dir=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER} --wandb-run-name=nnx-cgan-256-run-${TYPE}-${RUN_NUMBER} --epochs=200
+python training/GAN_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
+                    --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy \
+                    --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
+                    --checkpoint-dir=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER} \
+                    --wandb-run-name=nnx-cgan-256-run-${TYPE}-${RUN_NUMBER} \
+                    --epochs=200
 
-#python GAN_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt --checkpoint-dir=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER} --wandb-run-name=nnx-cgan-256-run-${TYPE}-${RUN_NUMBER} --epochs=200 --generator-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER}/Final_Generator --discriminator-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER}/Final_Discriminator
+#python training/GAN_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
+#                    --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy \
+#                    --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
+#                    --checkpoint-dir=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER} \
+#                    --wandb-run-name=nnx-cgan-256-run-${TYPE}-${RUN_NUMBER} \
+#                    --epochs=200 \
+#                    --generator-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER}/Final_Generator \
+#                    --discriminator-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER}/Final_Discriminator

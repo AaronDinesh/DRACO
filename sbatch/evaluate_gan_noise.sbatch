@@ -13,7 +13,7 @@ TYPE=$2
 cd /users/adinesh/DRACO
 nvidia-smi
 
-python evaluate_gan.py \
+python evaluation/evaluate_gan.py \
   --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
   --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy \
   --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \

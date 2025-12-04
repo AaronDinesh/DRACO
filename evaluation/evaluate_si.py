@@ -180,7 +180,8 @@ def evaluate(args: argparse.Namespace) -> None:
         target_images_dir.mkdir(parents=True, exist_ok=True)
         pred_images_dir.mkdir(parents=True, exist_ok=True)
 
-    eval_iter: Iterable[Batch] = test_loader(key=data_key, drop_last=False)
+    # Keep test sample ordering fixed so SI and GAN evaluations align one-to-one.
+    eval_iter: Iterable[Batch] = test_loader(key=None, drop_last=False)
     metadata_path = output_dir / "power_spectra_metadata.csv"
     with metadata_path.open("w", newline="", encoding="utf-8") as metadata_file:
         writer = csv.writer(metadata_file)

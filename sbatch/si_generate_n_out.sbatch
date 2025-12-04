@@ -15,7 +15,7 @@ cd /users/adinesh/DRACO
 # source .venv/bin/activate
 nvidia-smi
 
-python si_generate.py \
+python generation/si_generate.py \
   --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
   --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
   --target-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_B_IllustrisTNG_SB28_z=0.00.npy \
