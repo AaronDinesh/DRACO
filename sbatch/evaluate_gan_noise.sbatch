@@ -11,6 +11,7 @@
 RUN_NUMBER=$1
 TYPE=$2
 cd /users/adinesh/DRACO
+export PYTHONPATH="/users/adinesh/DRACO:${PYTHONPATH}"
 nvidia-smi
 
 python evaluation/evaluate_gan.py \

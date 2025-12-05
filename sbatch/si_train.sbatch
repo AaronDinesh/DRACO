@@ -13,6 +13,7 @@ TYPE=$2
 
 cd /users/adinesh/DRACO
 # source .venv/bin/activate
+export PYTHONPATH="/users/adinesh/DRACO:${PYTHONPATH}"
 nvidia-smi
 
 

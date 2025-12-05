@@ -12,6 +12,7 @@ RUN_NUMBER=$1
 TYPE=$2
 cd /users/adinesh/DRACO
 nvidia-smi
+export PYTHONPATH="/users/adinesh/DRACO:${PYTHONPATH}"
 
 python evaluation/evaluate_si.py \
   --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \

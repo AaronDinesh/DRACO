@@ -13,6 +13,7 @@ TYPE=$2
 
 cd /users/adinesh/DRACO
 # source .venv/bin/activate
+export PYTHONPATH="/users/adinesh/DRACO:${PYTHONPATH}"
 nvidia-smi
 
 python training/GAN_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \

@@ -12,6 +12,7 @@ RUN_NUMBER=$1
 TYPE=$2
 SAMPLE=$3
 cd /users/adinesh/DRACO
+export PYTHONPATH="/users/adinesh/DRACO:${PYTHONPATH}"
 nvidia-smi
 
 python generation/trace_si_sample.py \
