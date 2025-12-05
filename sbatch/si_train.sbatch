@@ -16,6 +16,20 @@ cd /users/adinesh/DRACO
 nvidia-smi
 
 
-python SI_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt --checkpoint-dir=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER} --wandb-run-name=nnx-si-256-run-${TYPE}-${RUN_NUMBER} --batch-size=32 --epochs=200
+# python training/SI_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
+#                    --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy \
+#                    --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
+#                    --checkpoint-dir=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER} \
+#                    --wandb-run-name=nnx-si-256-run-${TYPE}-${RUN_NUMBER} \
+#                    --batch-size=32 \
+#                    --epochs=200
 
-#python SI_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt --checkpoint-dir=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER} --wandb-run-name=nnx-si-256-run-${TYPE}-${RUN_NUMBER} --batch-size=32 --epochs=200 --velocity-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/B/run_${RUN_NUMBER}/velocity_final --score-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/B/run_${RUN_NUMBER}/score_final
+python training/SI_train.py --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
+                   --output-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy \
+                   --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
+                   --checkpoint-dir=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER} \
+                   --wandb-run-name=nnx-si-256-run-${TYPE}-${RUN_NUMBER} \
+                   --batch-size=32 \
+                   --epochs=200 \
+                   --velocity-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/B/run_${RUN_NUMBER}/velocity_final \
+                   --score-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/B/run_${RUN_NUMBER}/score_final
