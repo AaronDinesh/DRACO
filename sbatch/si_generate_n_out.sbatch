@@ -10,17 +10,18 @@
 
 RUN_NUMBER=$1
 SAMPLE_IDX=${2:-0}
+TYPE=$3
 
 cd /users/adinesh/DRACO
 # source .venv/bin/activate
 export PYTHONPATH="/users/adinesh/DRACO:${PYTHONPATH}"
 nvidia-smi
 
-python generation/si_generate.py \
+python generation/si_generate_n_out.py \
   --input-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_Mcdm_IllustrisTNG_SB28_z=0.00.npy \
   --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
-  --target-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_B_IllustrisTNG_SB28_z=0.00.npy \
-  --velocity-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/B/run_${RUN_NUMBER}/velocity_final \
-  --score-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/B/run_${RUN_NUMBER}/score_final \
-  --output-dir=/capstor/store/cscs/ska/sk030/si_generations/B/run_${RUN_NUMBER}/sample_${SAMPLE_IDX} \
+  --target-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy \
+  --velocity-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER}/velocity_final \
+  --score-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER}/score_final \
+  --output-dir=/capstor/store/cscs/ska/sk030/si_generations/${TYPE}/run_${RUN_NUMBER}/sample_${SAMPLE_IDX} \
   --sample-idx=${SAMPLE_IDX}
