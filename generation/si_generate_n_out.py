@@ -242,15 +242,21 @@ def save_outputs(
     outputs: Iterable[np.ndarray], output_dir: Path, target: np.ndarray | None = None
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = output_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     if target is not None:
-        target_uint8 = _to_uint8(np.asarray(target))
+        target_np = np.asarray(target)
+        target_uint8 = _to_uint8(target_np)
         Image.fromarray(target_uint8).save(output_dir / "target.png")
+        np.save(raw_dir / "target.npy", target_np)
 
     for idx, arr in enumerate(outputs):
-        arr_uint8 = _to_uint8(np.asarray(arr))
+        arr_np = np.asarray(arr)
+        arr_uint8 = _to_uint8(arr_np)
         img = Image.fromarray(arr_uint8)
         out_path = output_dir / f"sample_{idx:03d}.png"
         img.save(out_path)
+        np.save(raw_dir / f"sample_{idx:03d}.npy", arr_np)
 
 
 def main():

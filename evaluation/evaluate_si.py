@@ -173,12 +173,18 @@ def evaluate(args: argparse.Namespace) -> None:
     images_dir: Path | None = None
     target_images_dir: Path | None = None
     pred_images_dir: Path | None = None
+    target_raw_dir: Path | None = None
+    pred_raw_dir: Path | None = None
     if args.save_images:
         images_dir = output_dir / "images"
         target_images_dir = images_dir / "target"
         pred_images_dir = images_dir / "pred"
+        target_raw_dir = images_dir / "target_raw"
+        pred_raw_dir = images_dir / "pred_raw"
         target_images_dir.mkdir(parents=True, exist_ok=True)
         pred_images_dir.mkdir(parents=True, exist_ok=True)
+        target_raw_dir.mkdir(parents=True, exist_ok=True)
+        pred_raw_dir.mkdir(parents=True, exist_ok=True)
 
     # Keep test sample ordering fixed so SI and GAN evaluations align one-to-one.
     eval_iter: Iterable[Batch] = test_loader(key=None, drop_last=False)
@@ -285,6 +291,11 @@ def evaluate(args: argparse.Namespace) -> None:
                     )
                     plt.imsave(target_images_dir / f"sample_{row:05d}.png", target_img, cmap="gray")
                     plt.imsave(pred_images_dir / f"sample_{row:05d}.png", pred_img, cmap="gray")
+                if target_raw_dir is not None and pred_raw_dir is not None:
+                    target_np = np.asarray(jax.device_get(batch["targets"][offset]))
+                    pred_np = np.asarray(jax.device_get(si_preds[offset]))
+                    np.save(target_raw_dir / f"sample_{row:05d}.npy", target_np)
+                    np.save(pred_raw_dir / f"sample_{row:05d}.npy", pred_np)
             sample_idx += batch_size
             sample_pbar.update(batch_size)
         sample_pbar.close()
