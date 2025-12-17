@@ -21,7 +21,7 @@ python generation/gan_generate_n_out.py \
   --cosmos-params=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/params_SB28_IllustrisTNG.txt \
   --target-maps=/capstor/store/cscs/ska/sk030/camels_multifield_dataset/Maps_${TYPE}_IllustrisTNG_SB28_z=0.00.npy \
   --generator-checkpoint-path=/capstor/store/cscs/ska/sk030/gan_checkpoints/${TYPE}/no_noise/run_${RUN_NUMBER}/Final_Generator \
-  --output-dir=/capstor/store/cscs/ska/sk030/gan_generations/${TYPE}/no_noise/run_${RUN_NUMBER}/sample_${SAMPLE_IDX} \
+  --output-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/gan/${TYPE}/no_noise/run_${RUN_NUMBER}/generated_samples/sample_${SAMPLE_IDX} \
   --sample-idx=${SAMPLE_IDX} \
   --n-samples=15 \
   --img-channels=1 \
