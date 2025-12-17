@@ -101,7 +101,7 @@ def generate_samples(args: argparse.Namespace) -> tuple[np.ndarray | None, Itera
     _ = load_dotenv()
 
     master_key = random.key(args.seed)
-    gen_key, sample_key = random.split(master_key)
+    gen_key, sample_key, _aux_key, train_test_key = random.split(master_key, 4)
 
     input_maps = np.load(args.input_maps, mmap_mode="r")
     cosmos_params_df = pd.read_csv(args.cosmos_params, header=None, sep=" ")
@@ -114,9 +114,35 @@ def generate_samples(args: argparse.Namespace) -> tuple[np.ndarray | None, Itera
         raise ValueError(
             f"Input maps ({len(input_maps)}) and cosmos params ({len(cosmos_params)}) differ in length"
         )
+    dataset_len = len(input_maps)
 
-    cosmos_mu = jnp.mean(cosmos_params, axis=0)
-    cosmos_sigma = jnp.std(cosmos_params, axis=0) + 1e-6
+    # Deterministic train/test split matching evaluation: use the 4th split key from the seed.
+    perm = np.asarray(random.permutation(train_test_key, dataset_len))
+    n_test = max(1, int(round(args.test_ratio * dataset_len)))
+    test_indices = perm[:n_test]
+    train_indices = perm[n_test:]
+
+    if args.split not in {"train", "test", "all"}:
+        raise ValueError("split must be one of: train, test, all")
+    if args.split == "train":
+        subset_indices = train_indices
+    elif args.split == "test":
+        subset_indices = test_indices
+    else:
+        subset_indices = perm
+
+    if len(subset_indices) == 0:
+        raise ValueError(f"No samples available for split '{args.split}'")
+    if args.sample_idx < 0 or args.sample_idx >= len(subset_indices):
+        raise ValueError(
+            f"sample_idx {args.sample_idx} out of range for split '{args.split}' of size {len(subset_indices)}"
+        )
+    selected_idx = int(subset_indices[args.sample_idx])
+
+    # Use train-split statistics to mirror training normalization (unless checkpoint overrides).
+    stats_indices = train_indices if len(train_indices) > 0 else np.arange(dataset_len)
+    cosmos_mu = jnp.mean(cosmos_params[stats_indices], axis=0)
+    cosmos_sigma = jnp.std(cosmos_params[stats_indices], axis=0) + 1e-6
 
     # Build generator with feature size matching training (optionally with noise channel).
     input_features_size = args.img_channels + 1 if args.add_noise else args.img_channels
@@ -150,7 +176,7 @@ def generate_samples(args: argparse.Namespace) -> tuple[np.ndarray | None, Itera
     inputs, cosmos, target = _load_sample(
         input_maps=input_maps,
         cosmos_params=cosmos_params,
-        sample_idx=args.sample_idx,
+        sample_idx=selected_idx,
         transform_name=args.transform_name,
         cosmos_mu=cosmos_mu,
         cosmos_sigma=cosmos_sigma,
@@ -188,6 +214,8 @@ def main():
     parser.add_argument("--img-channels", type=int, default=1, help="Number of channels in the input/output images")
     parser.add_argument("--transform-name", default="signed_log1p", help="Transform applied during training (default: signed_log1p)")
     parser.add_argument("--add-noise", action="store_true", help="If set, append a noise channel (for noise-GAN checkpoints)")
+    parser.add_argument("--split", choices=["train", "test", "all"], default="test", help="Which split to draw samples from; sample_idx is local to that split.")
+    parser.add_argument("--test-ratio", type=float, default=0.2, help="Test split ratio for selecting train/test indices.")
     parser.add_argument("--seed", type=int, default=0, help="RNG seed")
     # fmt: on
     args = parser.parse_args()
