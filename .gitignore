@@ -15,5 +15,6 @@ data/
 wandb/
 logs/
 visualizations/
+presentation/
 core_*
 evaluation_runs/*

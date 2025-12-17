@@ -67,6 +67,43 @@ def plot_sample(
     return save_path
 
 
+def plot_mean_and_iqr(
+    k_vals: np.ndarray,
+    target_pk: np.ndarray,
+    si_pk: np.ndarray,
+    save_dir: Path,
+    title_prefix: str,
+):
+    """Plot median spectra with interquartile bands for target and SI outputs."""
+    target_median = np.median(target_pk, axis=0)
+    si_median = np.median(si_pk, axis=0)
+    target_q25 = np.percentile(target_pk, 25, axis=0)
+    target_q75 = np.percentile(target_pk, 75, axis=0)
+    si_q25 = np.percentile(si_pk, 25, axis=0)
+    si_q75 = np.percentile(si_pk, 75, axis=0)
+
+    fig = Figure(figsize=(6, 4))
+    FigureCanvas(fig)  # attach canvas for Agg backend
+    ax = fig.add_subplot(111)
+    target_color = "dodgerblue"
+    si_color = "seagreen"
+
+    ax.fill_between(k_vals, target_q25, target_q75, color=target_color, alpha=0.25, label="Target IQR")
+    ax.fill_between(k_vals, si_q25, si_q75, color=si_color, alpha=0.25, label="SI IQR")
+    ax.plot(k_vals, target_median, color=target_color, linewidth=2.2, label="Target median")
+    ax.plot(k_vals, si_median, color=si_color, linewidth=2.0, label="SI median")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_title(f"{title_prefix} Median with IQR")
+    ax.set_xlabel("Wave number k [h/Mpc]")
+    ax.set_ylabel("P(k)")
+    ax.legend()
+    fig.tight_layout()
+    save_path = save_dir / "power_spectrum_median_iqr.png"
+    fig.savefig(save_path, dpi=150)
+    return save_path
+
+
 _K_VALS: np.ndarray | None = None
 _TARGET_PK: np.memmap | None = None
 _SI_PK: np.memmap | None = None
@@ -131,6 +168,7 @@ def generate_plots(
     if not jobs:
         jobs = [(i, i) for i in range(n_samples)]
     jobs.sort(key=lambda x: x[0])
+    spectra_rows = [row for _, row in jobs]
     k_vals_array = np.asarray(k_vals)
 
     # Single-process path (no pool) for easiest debugging or when requested.
@@ -147,6 +185,13 @@ def generate_plots(
                 save_dir=out_dir,
                 title_prefix=title_prefix,
             )
+        plot_mean_and_iqr(
+            k_vals=k_vals_array,
+            target_pk=np.asarray(target_pk[spectra_rows]),
+            si_pk=np.asarray(si_pk[spectra_rows]),
+            save_dir=out_dir,
+            title_prefix=title_prefix,
+        )
         return out_dir
 
     # Multiprocessing path: load memmaps per worker via initializer to avoid large pickles.
@@ -162,6 +207,13 @@ def generate_plots(
             for fut in as_completed(futures):
                 fut.result()
                 pbar.update(1)
+    plot_mean_and_iqr(
+        k_vals=k_vals_array,
+        target_pk=np.asarray(target_pk[spectra_rows]),
+        si_pk=np.asarray(si_pk[spectra_rows]),
+        save_dir=out_dir,
+        title_prefix=title_prefix,
+    )
     return out_dir
 
 

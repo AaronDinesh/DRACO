@@ -1,6 +1,6 @@
 import argparse
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Any, Iterable, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -22,29 +22,28 @@ def _add_channel_last(x: jnp.ndarray) -> jnp.ndarray:
 
 
 def _load_input(
-    input_maps_path: str,
-    params_path: str,
+    input_maps: np.ndarray,
+    cosmos_params: jnp.ndarray,
     sample_idx: int,
     transform_name: str,
+    cosmos_mu: jnp.ndarray,
+    cosmos_sigma: jnp.ndarray,
     target_maps_path: str | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, np.ndarray | None]:
-    input_maps = np.load(input_maps_path, mmap_mode="r")
-    cosmos_params = pd.read_csv(params_path, header=None, sep=" ")
-    cosmos_params = jnp.asarray(cosmos_params.to_numpy(), dtype=jnp.float32)
-
     if sample_idx < 0 or sample_idx >= len(input_maps):
         raise ValueError(
             f"sample_idx {sample_idx} out of range for dataset of size {len(input_maps)}"
         )
 
     forward_transform, _ = make_transform(name=transform_name)
-    cosmos_mu = jnp.mean(cosmos_params, axis=0)
-    cosmos_sigma = jnp.std(cosmos_params, axis=0) + 1e-6
 
     x0 = jnp.asarray(
         forward_transform(_add_channel_last(jnp.asarray(input_maps[sample_idx]))), dtype=jnp.float32
     )
-    cosmos = jnp.asarray((cosmos_params[sample_idx] - cosmos_mu) / cosmos_sigma, dtype=jnp.float32)
+    cosmos = jnp.asarray(
+        (cosmos_params[sample_idx] - cosmos_mu) / cosmos_sigma,
+        dtype=jnp.float32,
+    )
 
     target: np.ndarray | None = None
     if target_maps_path:
@@ -68,7 +67,7 @@ def _build_models(
     time_embed_dim: int,
     velocity_checkpoint: str,
     score_checkpoint: str,
-) -> Tuple[StochasticInterpolantUNet, StochasticInterpolantUNet]:
+) -> Tuple[StochasticInterpolantUNet, StochasticInterpolantUNet, dict[str, Any], dict[str, Any]]:
     vel_key, score_key = random.split(key)
     vel_model = StochasticInterpolantUNet(
         key=vel_key,
@@ -97,10 +96,10 @@ def _build_models(
         wrt=nnx.Param,
     )
 
-    restore_checkpoint(velocity_checkpoint, vel_model, vel_opt)
-    restore_checkpoint(score_checkpoint, score_model, score_opt)
+    vel_meta = restore_checkpoint(velocity_checkpoint, vel_model, vel_opt)
+    score_meta = restore_checkpoint(score_checkpoint, score_model, score_opt)
 
-    return vel_model, score_model
+    return vel_model, score_model, vel_meta, score_meta
 
 
 def _create_integrator(
@@ -143,24 +142,53 @@ def generate_samples(
     master_key = random.key(args.seed)
     model_key, sample_key = random.split(master_key)
 
-    x0, cosmos, target = _load_input(
-        args.input_maps,
-        args.cosmos_params,
-        args.sample_idx,
-        args.transform_name,
-        target_maps_path=args.target_maps,
-    )
-    cosmos = cosmos[None, ...]  # add batch axis
-    x0 = x0[None, ...]  # add batch axis
+    input_maps = np.load(args.input_maps, mmap_mode="r")
+    cosmos_params_df = pd.read_csv(args.cosmos_params, header=None, sep=" ")
+    repeat_factor: int = input_maps.shape[0] // len(cosmos_params_df)
+    cosmos_params_df = cosmos_params_df.loc[
+        cosmos_params_df.index.repeat(repeat_factor)
+    ].reset_index(drop=True)
+    cosmos_params = jnp.asarray(cosmos_params_df.to_numpy(), dtype=jnp.float32)
+    if len(input_maps) != len(cosmos_params):
+        raise ValueError(
+            f"Input maps ({len(input_maps)}) and cosmos params ({len(cosmos_params)}) differ in length"
+        )
 
-    vel_model, score_model = _build_models(
+    cosmos_mu = jnp.mean(cosmos_params, axis=0)
+    cosmos_sigma = jnp.std(cosmos_params, axis=0) + 1e-6
+
+    vel_model, score_model, vel_meta, score_meta = _build_models(
         key=model_key,
         img_channels=args.img_channels,
-        cosmos_params_len=cosmos.shape[-1],
+        cosmos_params_len=cosmos_params.shape[-1],
         time_embed_dim=args.time_embed_dim,
         velocity_checkpoint=args.velocity_checkpoint_path,
         score_checkpoint=args.score_checkpoint_path,
     )
+
+    stored_data_stats: dict[str, jnp.ndarray] | None = None
+    for meta in (vel_meta, score_meta):
+        if meta.get("data_stats") is not None:
+            stored_data_stats = meta["data_stats"]
+            break
+    if stored_data_stats is not None:
+        mu_override = stored_data_stats.get("cosmos_params_mu")
+        sigma_override = stored_data_stats.get("cosmos_params_sigma")
+        if mu_override is not None and sigma_override is not None:
+            cosmos_mu = jnp.asarray(mu_override)
+            cosmos_sigma = jnp.asarray(sigma_override)
+
+    x0, cosmos, target = _load_input(
+        input_maps=input_maps,
+        cosmos_params=cosmos_params,
+        sample_idx=args.sample_idx,
+        transform_name=args.transform_name,
+        cosmos_mu=cosmos_mu,
+        cosmos_sigma=cosmos_sigma,
+        target_maps_path=args.target_maps,
+    )
+    cosmos = cosmos[None, ...]  # add batch axis
+    x0 = x0[None, ...]  # add batch axis
 
     t_grid = jnp.linspace(args.t_min, args.t_max, args.integrator_steps + 1)
     interpolant = LinearInterpolant(
