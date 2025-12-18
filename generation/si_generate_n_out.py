@@ -15,7 +15,12 @@ from flax import nnx
 from PIL import Image
 from tqdm import tqdm
 
-from src.interpolants import LinearInterpolant, SDEIntegrator, StochasticInterpolantUNet, make_gamma
+from src.interpolants import (
+    LinearInterpolant,
+    SDEIntegrator,
+    StochasticInterpolantUNet,
+    make_gamma,
+)
 from src.utils import make_transform, power_spectrum, restore_checkpoint
 
 
@@ -23,7 +28,9 @@ def _add_channel_last(x: jnp.ndarray) -> jnp.ndarray:
     return x[..., None] if x.ndim == 2 else x
 
 
-def _power_spectrum_curve(field: np.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
+def _power_spectrum_curve(
+    field: np.ndarray, bins: int
+) -> tuple[np.ndarray, np.ndarray]:
     mesh = jnp.asarray(field)
     if mesh.ndim == 3 and mesh.shape[-1] == 1:
         mesh = mesh[..., 0]
@@ -56,7 +63,8 @@ def _load_input(
     forward_transform, _ = make_transform(name=transform_name)
 
     x0 = jnp.asarray(
-        forward_transform(_add_channel_last(jnp.asarray(input_maps[sample_idx]))), dtype=jnp.float32
+        forward_transform(_add_channel_last(jnp.asarray(input_maps[sample_idx]))),
+        dtype=jnp.float32,
     )
     cosmos = jnp.asarray(
         (cosmos_params[sample_idx] - cosmos_mu) / cosmos_sigma,
@@ -85,7 +93,9 @@ def _build_models(
     time_embed_dim: int,
     velocity_checkpoint: str,
     score_checkpoint: str,
-) -> Tuple[StochasticInterpolantUNet, StochasticInterpolantUNet, dict[str, Any], dict[str, Any]]:
+) -> Tuple[
+    StochasticInterpolantUNet, StochasticInterpolantUNet, dict[str, Any], dict[str, Any]
+]:
     vel_key, score_key = random.split(key)
     vel_model = StochasticInterpolantUNet(
         key=vel_key,
@@ -241,7 +251,9 @@ def generate_samples(
         t_schedule="linear",
         gamma_type=args.gamma_type,
     )
-    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(gamma_type=args.gamma_type, a=args.gamma_a)
+    gamma_fn, gamma_dot_fn, gg_dot_fn = make_gamma(
+        gamma_type=args.gamma_type, a=args.gamma_a
+    )
     interpolant.gamma = gamma_fn
     interpolant.gamma_dot = gamma_dot_fn
     interpolant.gg_dot = gg_dot_fn
@@ -322,7 +334,7 @@ def main():
     parser.add_argument("--eps", type=float, default=5e-3)
     parser.add_argument("--t-min", type=float, default=1e-9)
     parser.add_argument("--t-max", type=float, default=1.0 - 1e-9)
-    parser.add_argument("--integrator-steps", type=int, default=10000)
+    parser.add_argument("--integrator-steps", type=int, default=3000)
     parser.add_argument("--n-save", type=int, default=1)
     parser.add_argument("--n-likelihood", type=int, default=1)
     parser.add_argument("--gamma-type", type=str, default="brownian")
@@ -348,8 +360,12 @@ def main():
     if len(outputs_list) == 0:
         raise ValueError("No generated samples available to compute a power spectrum.")
 
-    k_vals, target_pk_1d = _power_spectrum_curve(np.asarray(target), args.power_spectrum_bins)
-    k_pred, pk_pred = _power_spectrum_curve(np.asarray(outputs_list[0]), args.power_spectrum_bins)
+    k_vals, target_pk_1d = _power_spectrum_curve(
+        np.asarray(target), args.power_spectrum_bins
+    )
+    k_pred, pk_pred = _power_spectrum_curve(
+        np.asarray(outputs_list[0]), args.power_spectrum_bins
+    )
     if len(k_pred) != len(k_vals) or not np.allclose(k_pred, k_vals):
         raise ValueError("Inconsistent k-binning between target and generated sample.")
     pk_mse = _spectrum_mse(pk_pred, target_pk_1d)

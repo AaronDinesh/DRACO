@@ -29,4 +29,5 @@ python generation/gan_generate_n_out.py \
   --img-channels=1 \
   --transform-name=log10 \
   --add-noise \
-  --split=test
+  --split=test \
+  --n-samples=1
