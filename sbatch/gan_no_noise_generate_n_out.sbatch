@@ -26,3 +26,4 @@ python generation/gan_generate_n_out.py \
   --n-samples=15 \
   --img-channels=1 \
   --transform-name=log10 \
+  --split=test

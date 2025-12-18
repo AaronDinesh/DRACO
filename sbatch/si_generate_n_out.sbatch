@@ -24,4 +24,5 @@ python generation/si_generate_n_out.py \
   --velocity-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER}/velocity_final \
   --score-checkpoint-path=/capstor/store/cscs/ska/sk030/si_checkpoints/${TYPE}/run_${RUN_NUMBER}/score_final \
   --output-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/si/${TYPE}/run_${RUN_NUMBER}/generated_samples/sample_${SAMPLE_IDX} \
-  --sample-idx=${SAMPLE_IDX}
+  --sample-idx=${SAMPLE_IDX} \
+  --split=test
