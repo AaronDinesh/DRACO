@@ -127,8 +127,8 @@ def make_train_test_loaders(
         shuffled_idx: jnp.ndarray, key: Array | None, drop_last: bool = False
     ) -> collections.abc.Generator[Batch]:
         if key is not None:
-            key, perm_key = random.split(key)
-            shuffled_idx = random.permutation(perm_key, shuffled_idx)
+            # key, perm_key = random.split(key)
+            shuffled_idx = random.permutation(key, shuffled_idx)
 
         n = len(shuffled_idx)
         stop = (n // batch_size) * batch_size if drop_last else n

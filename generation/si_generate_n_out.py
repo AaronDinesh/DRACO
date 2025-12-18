@@ -1,4 +1,6 @@
 import argparse
+import csv
+import json
 from pathlib import Path
 from typing import Any, Iterable, Tuple
 
@@ -14,11 +16,27 @@ from PIL import Image
 from tqdm import tqdm
 
 from src.interpolants import LinearInterpolant, SDEIntegrator, StochasticInterpolantUNet, make_gamma
-from src.utils import make_transform, restore_checkpoint
+from src.utils import make_transform, power_spectrum, restore_checkpoint
 
 
 def _add_channel_last(x: jnp.ndarray) -> jnp.ndarray:
     return x[..., None] if x.ndim == 2 else x
+
+
+def _power_spectrum_curve(field: np.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray]:
+    mesh = jnp.asarray(field)
+    if mesh.ndim == 3 and mesh.shape[-1] == 1:
+        mesh = mesh[..., 0]
+    k_vals, pk = power_spectrum(mesh, kedges=bins)
+    return np.asarray(jax.device_get(k_vals)), np.asarray(jax.device_get(pk))
+
+
+def _spectrum_mse(pred: np.ndarray, target: np.ndarray) -> float:
+    min_len = min(len(pred), len(target))
+    if min_len == 0:
+        return 0.0
+    diff = pred[:min_len] - target[:min_len]
+    return float(np.mean(np.square(diff)))
 
 
 def _load_input(
@@ -300,6 +318,7 @@ def main():
     parser.add_argument("--transform-name", default="log10")
     parser.add_argument("--split", choices=["train", "test", "all"], default="test", help="Which split to draw samples from; sample_idx is local to that split.")
     parser.add_argument("--test-ratio", type=float, default=0.2, help="Test split ratio for selecting train/test indices.")
+    parser.add_argument("--power-spectrum-bins", type=int, default=64, help="Number of k-bins for power spectrum outputs.")
     parser.add_argument("--eps", type=float, default=5e-3)
     parser.add_argument("--t-min", type=float, default=1e-9)
     parser.add_argument("--t-max", type=float, default=1.0 - 1e-9)
@@ -314,7 +333,56 @@ def main():
     args = parser.parse_args()
 
     target, outputs = generate_samples(args)
-    save_outputs(outputs, Path(args.output_dir), target=target)
+    outputs_list = list(outputs)
+    output_dir = Path(args.output_dir)
+    save_outputs(outputs_list, output_dir, target=target)
+
+    # Power spectrum outputs (compatible with plotting/plot_evaluation_si.py).
+    # That plotting code expects:
+    # - `k_vals.npy`: a normal `.npy` (via `np.save`)
+    # - `target_pk.npy` and `si_pk.npy`: raw float32 buffers WITHOUT `.npy` headers
+    if target is None:
+        raise ValueError(
+            "Power spectrum outputs require --target-maps so `target_pk.npy` is available for plotting."
+        )
+
+    k_vals, target_pk_1d = _power_spectrum_curve(np.asarray(target), args.power_spectrum_bins)
+    pred_pks: list[np.ndarray] = []
+    pk_mses: list[float] = []
+    for pred in outputs_list:
+        k_pred, pk_pred = _power_spectrum_curve(np.asarray(pred), args.power_spectrum_bins)
+        if len(k_pred) != len(k_vals) or not np.allclose(k_pred, k_vals):
+            raise ValueError("Inconsistent k-binning across generated samples.")
+        pred_pks.append(pk_pred)
+        pk_mses.append(_spectrum_mse(pk_pred, target_pk_1d))
+
+    k_vals = np.asarray(k_vals)
+    np.save(output_dir / "k_vals.npy", k_vals)
+
+    pred_pk_arr = np.stack(pred_pks, axis=0).astype(np.float32, copy=False)
+    target_pk_arr = np.repeat(
+        np.asarray(target_pk_1d, dtype=np.float32)[None, :], repeats=pred_pk_arr.shape[0], axis=0
+    )
+
+    # Write raw float32 buffers (no `.npy` header) to match evaluation scripts / plotting loaders.
+    target_pk_arr.tofile(output_dir / "target_pk.npy")
+    pred_pk_arr.tofile(output_dir / "si_pk.npy")
+
+    meta_path = output_dir / "power_spectra_metadata.csv"
+    with meta_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["sample_idx", "spectra_row", "pk_mse"])
+        for gen_idx, pk_mse in enumerate(pk_mses):
+            writer.writerow([int(gen_idx), int(gen_idx), float(pk_mse)])
+
+    metrics = {
+        "power_spectrum_bins": int(args.power_spectrum_bins),
+        "n_generated": int(pred_pk_arr.shape[0]),
+        "pk_mse_mean": float(np.mean(pk_mses)) if pk_mses else None,
+    }
+    with (output_dir / "metrics_power_spectrum.json").open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
     print(f"Saved {args.n_samples} samples to {args.output_dir}")
 
 
