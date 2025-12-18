@@ -252,24 +252,20 @@ def main():
         raise ValueError(
             "Power spectrum outputs require --target-maps so `target_pk.npy` is available for plotting."
         )
+    if len(outputs_list) == 0:
+        raise ValueError("No generated samples available to compute a power spectrum.")
 
     k_vals, target_pk_1d = _power_spectrum_curve(np.asarray(target), args.power_spectrum_bins)
-    pred_pks: list[np.ndarray] = []
-    pk_mses: list[float] = []
-    for pred in outputs_list:
-        k_pred, pk_pred = _power_spectrum_curve(np.asarray(pred), args.power_spectrum_bins)
-        if len(k_pred) != len(k_vals) or not np.allclose(k_pred, k_vals):
-            raise ValueError("Inconsistent k-binning across generated samples.")
-        pred_pks.append(pk_pred)
-        pk_mses.append(_spectrum_mse(pk_pred, target_pk_1d))
+    k_pred, pk_pred = _power_spectrum_curve(np.asarray(outputs_list[0]), args.power_spectrum_bins)
+    if len(k_pred) != len(k_vals) or not np.allclose(k_pred, k_vals):
+        raise ValueError("Inconsistent k-binning between target and generated sample.")
+    pk_mse = _spectrum_mse(pk_pred, target_pk_1d)
 
     k_vals = np.asarray(k_vals)
     np.save(output_dir / "k_vals.npy", k_vals)
 
-    pred_pk_arr = np.stack(pred_pks, axis=0).astype(np.float32, copy=False)
-    target_pk_arr = np.repeat(
-        np.asarray(target_pk_1d, dtype=np.float32)[None, :], repeats=pred_pk_arr.shape[0], axis=0
-    )
+    pred_pk_arr = np.asarray(pk_pred, dtype=np.float32)[None, :]
+    target_pk_arr = np.asarray(target_pk_1d, dtype=np.float32)[None, :]
 
     # Write raw float32 buffers (no `.npy` header) to match evaluation scripts / plotting loaders.
     target_pk_arr.tofile(output_dir / "target_pk.npy")
@@ -279,13 +275,13 @@ def main():
     with meta_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["sample_idx", "spectra_row", "pk_mse"])
-        for gen_idx, pk_mse in enumerate(pk_mses):
-            writer.writerow([int(gen_idx), int(gen_idx), float(pk_mse)])
+        writer.writerow([0, 0, float(pk_mse)])
 
     metrics = {
         "power_spectrum_bins": int(args.power_spectrum_bins),
-        "n_generated": int(pred_pk_arr.shape[0]),
-        "pk_mse_mean": float(np.mean(pk_mses)) if pk_mses else None,
+        "n_generated_total": int(len(outputs_list)),
+        "n_power_spectra": int(pred_pk_arr.shape[0]),
+        "pk_mse": float(pk_mse),
     }
     with (output_dir / "metrics_power_spectrum.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
