@@ -51,13 +51,17 @@ def plot_sample(
     idx: int,
     save_dir: Path,
     title_prefix: str,
+    title_override: str | None = None,
 ):
     fig = Figure(figsize=(6, 4))
     FigureCanvas(fig)  # attach canvas for Agg backend
     ax = fig.add_subplot(111)
     ax.loglog(k_vals, target_pk, label="Target", linewidth=2.0)
     ax.loglog(k_vals, gan_pk, label="GAN", linewidth=1.8)
-    ax.set_title(f"{title_prefix} Sample {idx:05d}")
+    if title_override is not None:
+        ax.set_title(title_override)
+    else:
+        ax.set_title(f"{title_prefix} Sample {idx:05d}")
     ax.set_xlabel("Wave number k [h/Mpc]")
     ax.set_ylabel("P(k)")
     ax.legend()
@@ -73,6 +77,7 @@ def plot_mean_and_iqr(
     gan_pk: np.ndarray,
     save_dir: Path,
     title_prefix: str,
+    title_override: str | None = None,
 ):
     """Plot median spectra with interquartile bands for target and GAN outputs."""
     target_median = np.median(target_pk, axis=0)
@@ -88,13 +93,18 @@ def plot_mean_and_iqr(
     target_color = "dodgerblue"
     gan_color = "darkorange"
 
-    ax.fill_between(k_vals, target_q25, target_q75, color=target_color, alpha=0.25, label="Target IQR")
+    ax.fill_between(
+        k_vals, target_q25, target_q75, color=target_color, alpha=0.25, label="Target IQR"
+    )
     ax.fill_between(k_vals, gan_q25, gan_q75, color=gan_color, alpha=0.25, label="GAN IQR")
     ax.plot(k_vals, target_median, color=target_color, linewidth=2.2, label="Target median")
     ax.plot(k_vals, gan_median, color=gan_color, linewidth=2.0, label="GAN median")
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_title(f"{title_prefix} Median with IQR")
+    if title_override is not None:
+        ax.set_title(title_override)
+    else:
+        ax.set_title(f"{title_prefix} Median with IQR")
     ax.set_xlabel("Wave number k [h/Mpc]")
     ax.set_ylabel("P(k)")
     ax.legend()
@@ -109,11 +119,12 @@ _TARGET_PK: np.memmap | None = None
 _GAN_PK: np.memmap | None = None
 _OUT_DIR_STR: str | None = None
 _TITLE_PREFIX: str | None = None
+_TITLE_OVERRIDE: str | None = None
 
 
-def _init_worker(run_dir_str: str, out_dir_str: str, title_prefix: str):
+def _init_worker(run_dir_str: str, out_dir_str: str, title_prefix: str, title_override: str | None):
     """Initialize per-process globals for multiprocessing."""
-    global _K_VALS, _TARGET_PK, _GAN_PK, _OUT_DIR_STR, _TITLE_PREFIX
+    global _K_VALS, _TARGET_PK, _GAN_PK, _OUT_DIR_STR, _TITLE_PREFIX, _TITLE_OVERRIDE
     rd = Path(run_dir_str)
     kv, tp, gp = load_memmaps(rd)
     _K_VALS = np.asarray(kv)
@@ -121,6 +132,7 @@ def _init_worker(run_dir_str: str, out_dir_str: str, title_prefix: str):
     _GAN_PK = gp
     _OUT_DIR_STR = out_dir_str
     _TITLE_PREFIX = title_prefix
+    _TITLE_OVERRIDE = title_override
 
 
 def _proc_task(sample_idx: int, spectra_row: int):
@@ -141,6 +153,7 @@ def _proc_task(sample_idx: int, spectra_row: int):
         idx=sample_idx,
         save_dir=Path(_OUT_DIR_STR),
         title_prefix=_TITLE_PREFIX,
+        title_override=_TITLE_OVERRIDE,
     )
 
 
@@ -148,6 +161,7 @@ def generate_plots(
     run_dir: Path,
     output_dir: Path | None,
     title_prefix: str,
+    title_override: str | None = None,
     num_workers: int | None = None,
 ):
     k_vals, target_pk, gan_pk = load_memmaps(run_dir)
@@ -184,6 +198,7 @@ def generate_plots(
                 idx=sample_idx,
                 save_dir=out_dir,
                 title_prefix=title_prefix,
+                title_override=title_override,
             )
         plot_mean_and_iqr(
             k_vals=k_vals_array,
@@ -191,6 +206,7 @@ def generate_plots(
             gan_pk=np.asarray(gan_pk[spectra_rows]),
             save_dir=out_dir,
             title_prefix=title_prefix,
+            title_override=title_override,
         )
         return out_dir
 
@@ -198,7 +214,7 @@ def generate_plots(
     with ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_init_worker,
-        initargs=(str(run_dir), str(out_dir), title_prefix),
+        initargs=(str(run_dir), str(out_dir), title_prefix, title_override),
     ) as executor:
         futures = [
             executor.submit(_proc_task, sample_idx, spectra_row) for sample_idx, spectra_row in jobs
@@ -213,6 +229,7 @@ def generate_plots(
         gan_pk=np.asarray(gan_pk[spectra_rows]),
         save_dir=out_dir,
         title_prefix=title_prefix,
+        title_override=title_override,
     )
     return out_dir
 
@@ -236,6 +253,9 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="GAN Power Spectrum",
         help="Prefix for the plot titles",
+    )
+    parser.add_argument(
+        "--title-override", type=str, default=None, help="Override the default title if needed"
     )
     parser.add_argument(
         "--noise-gan",
@@ -264,6 +284,7 @@ def main():
         run_dir=run_dir,
         output_dir=output_dir,
         title_prefix=title_prefix,
+        title_override=args.title_override,
         num_workers=args.num_workers,
     )
     print(f"Saved plots to {saved_dir}")
