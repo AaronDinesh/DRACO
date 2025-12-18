@@ -28,4 +28,4 @@ python generation/trace_si_sample.py \
   --n-likelihood=1 \
   --test-ratio=0.2 \
   --sample-idx=$3 \
-  --trace-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/si/${TYPE}/run_${RUN_NUMBER}/traced_gen
+  --trace-dir=/capstor/store/cscs/ska/sk030/evaluation_runs/si/${TYPE}/run_${RUN_NUMBER}/traced_gen/sample_${3}
