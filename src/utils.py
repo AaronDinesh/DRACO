@@ -191,14 +191,13 @@ def make_transform(
         # x = sign(y) * s * (10**|y| - 1)
         # Symmetric, zero-centered, reversible (no clipping/blur inside)
         s = float(scale)
-
         def forward(x: jnp.ndarray):
             ax = jnp.abs(x)
-            return jnp.sign(x) * jnp.log10(1.0 + ax / s)
+            return jnp.sign(x) * jnp.log10(1 + ax / s)
 
         def inverse(y: jnp.ndarray):
             ay = jnp.abs(y)
-            return jnp.sign(y) * s * (jnp.power(10.0, ay) - 1.0)
+            return jnp.sign(y) * s * (jnp.power(10.0, ay) - 1)
 
         return forward, inverse
 

@@ -11,6 +11,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas  # n
 from matplotlib.figure import Figure  # noqa: E402
 from tqdm import tqdm
 
+from src.utils import make_transform
 
 def load_memmaps(run_dir: Path):
     k_vals = np.load(run_dir / "k_vals.npy", mmap_mode="r")
@@ -114,6 +115,34 @@ def plot_mean_and_iqr(
     return save_path
 
 
+def _restore_with_target_min(
+    pred: np.ndarray,
+    target: np.ndarray,
+    transform_name: str,
+    transform_scale: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Undo the forward transform on pred using the target's minimum (for log10)."""
+    if transform_name == "log10":
+        ln10 = float(np.log(10.0))
+        pred_arr = pred if pred.ndim >= 3 else pred[..., None]
+        target_arr = target if target.ndim >= 3 else target[..., None]
+
+        tiny = np.finfo(target_arr.dtype).tiny
+        g = np.log(np.maximum(target_arr, tiny))
+        g_min = np.min(g, axis=(0, 1), keepdims=True)  # min over H,W; keep channel
+        pred_restored = np.exp(pred_arr * ln10 + g_min)
+        target_restored = np.exp(target_arr * ln10 + g_min)
+
+        if pred.ndim < 3 and pred_restored.shape[-1] == 1:
+            pred_restored = pred_restored[..., 0]
+        if target.ndim < 3 and target_restored.shape[-1] == 1:
+            target_restored = target_restored[..., 0]
+        return pred_restored, target_restored
+
+    _, inverse = make_transform(transform_name, scale=transform_scale)
+    return np.asarray(inverse(pred)), np.asarray(inverse(target))
+
+
 _K_VALS: np.ndarray | None = None
 _TARGET_PK: np.memmap | None = None
 _GAN_PK: np.memmap | None = None
@@ -157,12 +186,58 @@ def _proc_task(sample_idx: int, spectra_row: int):
     )
 
 
+def _restore_raw_maps(
+    run_dir: Path,
+    out_dir: Path,
+    jobs: list[tuple[int, int]],
+    max_samples: int | None,
+    transform_name: str,
+    transform_scale: float,
+):
+    """Restore transformed predictions using target minima and write them to disk."""
+    target_dir = run_dir / "images" / "target_raw"
+    pred_dir = run_dir / "images" / "pred_raw"
+    if not target_dir.exists() or not pred_dir.exists():
+        print("Raw image directories not found; skipping field restoration.")
+        return
+
+    restore_dir = out_dir / "restored_fields"
+    restore_dir.mkdir(parents=True, exist_ok=True)
+
+    restored = 0
+    for sample_idx, _ in jobs:
+        if max_samples is not None and restored >= max_samples:
+            break
+        t_path = target_dir / f"sample_{sample_idx:05d}.npy"
+        p_path = pred_dir / f"sample_{sample_idx:05d}.npy"
+        if not t_path.exists() or not p_path.exists():
+            continue
+        target_arr = np.load(t_path)
+        pred_arr = np.load(p_path)
+        pred_restored, target_restored = _restore_with_target_min(
+            pred=pred_arr,
+            target=target_arr,
+            transform_name=transform_name,
+            transform_scale=transform_scale,
+        )
+        np.save(restore_dir / f"sample_{sample_idx:05d}_target_restored.npy", target_restored)
+        np.save(restore_dir / f"sample_{sample_idx:05d}_pred_restored.npy", pred_restored)
+        restored += 1
+    if restored == 0:
+        print("No matching raw samples found to restore.")
+    else:
+        print(f"Restored {restored} sample(s) to {restore_dir}")
+
+
 def generate_plots(
     run_dir: Path,
     output_dir: Path | None,
     title_prefix: str,
     title_override: str | None = None,
     num_workers: int | None = None,
+    transform_name: str = "log10",
+    transform_scale: float = 1.0,
+    restore_limit: int | None = None,
 ):
     k_vals, target_pk, gan_pk = load_memmaps(run_dir)
     n_samples = target_pk.shape[0]
@@ -200,29 +275,22 @@ def generate_plots(
                 title_prefix=title_prefix,
                 title_override=title_override,
             )
-        plot_mean_and_iqr(
-            k_vals=k_vals_array,
-            target_pk=np.asarray(target_pk[spectra_rows]),
-            gan_pk=np.asarray(gan_pk[spectra_rows]),
-            save_dir=out_dir,
-            title_prefix=title_prefix,
-            title_override=title_override,
-        )
-        return out_dir
+    else:
+        # Multiprocessing path: load memmaps per worker via initializer to avoid large pickles.
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_init_worker,
+            initargs=(str(run_dir), str(out_dir), title_prefix, title_override),
+        ) as executor:
+            futures = [
+                executor.submit(_proc_task, sample_idx, spectra_row)
+                for sample_idx, spectra_row in jobs
+            ]
+            with tqdm(total=len(futures), desc="Plotting spectra", unit="plot") as pbar:
+                for fut in as_completed(futures):
+                    fut.result()
+                    pbar.update(1)
 
-    # Multiprocessing path: load memmaps per worker via initializer to avoid large pickles.
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=_init_worker,
-        initargs=(str(run_dir), str(out_dir), title_prefix, title_override),
-    ) as executor:
-        futures = [
-            executor.submit(_proc_task, sample_idx, spectra_row) for sample_idx, spectra_row in jobs
-        ]
-        with tqdm(total=len(futures), desc="Plotting spectra", unit="plot") as pbar:
-            for fut in as_completed(futures):
-                fut.result()
-                pbar.update(1)
     plot_mean_and_iqr(
         k_vals=k_vals_array,
         target_pk=np.asarray(target_pk[spectra_rows]),
@@ -231,6 +299,16 @@ def generate_plots(
         title_prefix=title_prefix,
         title_override=title_override,
     )
+
+    _restore_raw_maps(
+        run_dir=run_dir,
+        out_dir=out_dir,
+        jobs=jobs,
+        max_samples=restore_limit,
+        transform_name=transform_name,
+        transform_scale=transform_scale,
+    )
+
     return out_dir
 
 
@@ -268,6 +346,24 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Number of processes to use (default: Python-chosen max). Use 1 to disable multiprocessing.",
     )
+    parser.add_argument(
+        "--transform-name",
+        type=str,
+        default="log10",
+        help="Transform name used during evaluation (for restoration).",
+    )
+    parser.add_argument(
+        "--transform-scale",
+        type=float,
+        default=1.0,
+        help="Scale parameter for the transform (if applicable).",
+    )
+    parser.add_argument(
+        "--restore-limit",
+        type=int,
+        default=0,
+        help="Maximum samples to restore (0 restores all available).",
+    )
     return parser.parse_args()
 
 
@@ -286,6 +382,9 @@ def main():
         title_prefix=title_prefix,
         title_override=args.title_override,
         num_workers=args.num_workers,
+        transform_name=args.transform_name,
+        transform_scale=args.transform_scale,
+        restore_limit=None if args.restore_limit <= 0 else args.restore_limit,
     )
     print(f"Saved plots to {saved_dir}")
 
